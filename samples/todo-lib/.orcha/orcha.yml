@@ -1,16 +1,69 @@
 version: 1
 
 agents:
+  # Active config
   local_llm:
     mode: "http"
     endpoint: "http://localhost:11434/v1"
     model: "llama3.2"
     cli:
-      command: "" # e.g. codex
-      args: [] # e.g. ["exec", "--skip-git-repo-check"]
+      command: ""
+      args: []
       prompt_via_stdin: true
-      model_arg: null # e.g. -m
+      model_arg: null
       ensure_no_permission_flags: true
+
+  # Concrete CLI options (copy one into agents.local_llm when needed)
+  local_llm_codex:
+    mode: "cli"
+    model: "gpt-5-codex"
+    cli:
+      command: "codex"
+      args: ["exec", "--skip-git-repo-check"]
+      prompt_via_stdin: false
+      model_arg: "-m"
+      ensure_no_permission_flags: true
+  local_llm_codex_manual_flags:
+    mode: "cli"
+    model: "gpt-5-codex"
+    cli:
+      command: "codex"
+      args:
+        - "exec"
+        - "--skip-git-repo-check"
+        - "--ask-for-approval"
+        - "never"
+      prompt_via_stdin: false
+      model_arg: "-m"
+      ensure_no_permission_flags: false
+  local_llm_claude:
+    mode: "cli"
+    model: "claude-3-7-sonnet-latest"
+    cli:
+      command: "claude"
+      args: ["-p"]
+      prompt_via_stdin: false
+      model_arg: "--model"
+      ensure_no_permission_flags: true
+  local_llm_opencode:
+    mode: "cli"
+    model: "gpt-oss-20b"
+    cli:
+      command: "opencode"
+      args: ["chat", "--format", "markdown"]
+      prompt_via_stdin: true
+      model_arg: "--model"
+      ensure_no_permission_flags: true
+  local_llm_opencode_json:
+    mode: "cli"
+    model: "gpt-oss-20b"
+    cli:
+      command: "opencode"
+      args: ["chat", "--format", "json"]
+      prompt_via_stdin: true
+      model_arg: "--model"
+      ensure_no_permission_flags: true
+
   anthropic:
     api_key_env: "ANTHROPIC_API_KEY"
     model: "claude-sonnet-4-20250514"
@@ -22,13 +75,22 @@ agents:
     model: "gpt-4.1"
 
 execution:
+  # Active pattern
   profile: "cheap_checkpoints"
-  # More patterns: see templates/configs/profile-patterns.yml
   profile_strategy:
-    alternating: []
-    every_n_cycles: []
-    mixins: []
-  # Codex CLI sample: see templates/configs/local-llm-cli-codex.yml
+    alternating: ["cheap_checkpoints", "quality_gate"]
+    every_n_cycles:
+      - interval: 3
+        profile: "unblock_first"
+        offset: 1
+    mixins:
+      - from: "quality_gate"
+        fields: ["review_agent", "security_gate"]
+        every_n_cycles: 2
+        offset: 1
+      - from: "unblock_first"
+        fields: ["escalation"]
+        offset: 0
   acceptance_criteria:
     - "`TodoList::add` assigns incremental IDs starting from `1`."
     - "`TodoList::complete` marks the target item as done and returns `false` for unknown IDs."
