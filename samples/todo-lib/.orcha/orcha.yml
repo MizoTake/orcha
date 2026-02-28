@@ -16,7 +16,6 @@ agents:
   # Concrete CLI options (copy one into agents.local_llm when needed)
   local_llm_codex:
     mode: "cli"
-    model: "gpt-5-codex"
     cli:
       command: "codex"
       args: ["exec", "--skip-git-repo-check"]
@@ -25,7 +24,6 @@ agents:
       ensure_no_permission_flags: true
   local_llm_codex_manual_flags:
     mode: "cli"
-    model: "gpt-5-codex"
     cli:
       command: "codex"
       args:
@@ -38,7 +36,6 @@ agents:
       ensure_no_permission_flags: false
   local_llm_claude:
     mode: "cli"
-    model: "claude-3-7-sonnet-latest"
     cli:
       command: "claude"
       args: ["-p"]
@@ -47,7 +44,6 @@ agents:
       ensure_no_permission_flags: true
   local_llm_opencode:
     mode: "cli"
-    model: "gpt-oss-20b"
     cli:
       command: "opencode"
       args: ["chat", "--format", "markdown"]
@@ -56,7 +52,6 @@ agents:
       ensure_no_permission_flags: true
   local_llm_opencode_json:
     mode: "cli"
-    model: "gpt-oss-20b"
     cli:
       command: "opencode"
       args: ["chat", "--format", "json"]

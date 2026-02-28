@@ -133,8 +133,13 @@ impl Agent for LocalCliAgent {
         let mut cmd = Command::new(&self.command);
         cmd.args(&self.args);
         if let Some(model_arg) = &self.model_arg {
-            cmd.arg(model_arg);
-            cmd.arg(&self.model);
+            if self.model.trim().is_empty() {
+                // When model is omitted in orcha.yml, let the CLI use its own default model.
+                // Do not append model flag/value in this case.
+            } else {
+                cmd.arg(model_arg);
+                cmd.arg(&self.model);
+            }
         }
 
         if self.prompt_via_stdin {
@@ -308,6 +313,17 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == "--ask-for-approval" || arg == "never"));
+    }
+
+    #[test]
+    fn does_not_append_model_when_model_is_empty() {
+        let mut cfg = sample_config_with("opencode", vec!["chat".to_string()], true);
+        cfg.local_llm_model = String::new();
+        cfg.local_llm_cli.model_arg = Some("--model".to_string());
+
+        let agent = LocalCliAgent::new(&cfg).expect("agent should build");
+        assert!(agent.model.is_empty());
+        assert_eq!(agent.model_arg.as_deref(), Some("--model"));
     }
 
     #[cfg(windows)]

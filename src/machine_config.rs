@@ -34,8 +34,8 @@ pub struct LocalLlmConfig {
     pub mode: LocalLlmMode,
     #[serde(default = "default_local_llm_endpoint")]
     pub endpoint: String,
-    #[serde(default = "default_local_llm_model")]
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub cli: LocalLlmCliConfig,
 }
@@ -252,7 +252,7 @@ impl Default for LocalLlmConfig {
         Self {
             mode: LocalLlmMode::Http,
             endpoint: default_local_llm_endpoint(),
-            model: default_local_llm_model(),
+            model: None,
             cli: LocalLlmCliConfig::default(),
         }
     }
@@ -306,10 +306,6 @@ fn default_local_llm_endpoint() -> String {
     "http://localhost:11434/v1".to_string()
 }
 
-fn default_local_llm_model() -> String {
-    "llama3.2".to_string()
-}
-
 fn default_prompt_via_stdin() -> bool {
     true
 }
@@ -343,7 +339,7 @@ execution:
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.execution.acceptance_criteria.len(), 1);
         assert_eq!(cfg.execution.verification.commands, vec!["cargo test"]);
-        assert_eq!(cfg.agents.local_llm.model, "llama3.2");
+        assert_eq!(cfg.agents.local_llm.model.as_deref(), Some("llama3.2"));
         assert_eq!(cfg.agents.local_llm.mode, LocalLlmMode::Http);
     }
 

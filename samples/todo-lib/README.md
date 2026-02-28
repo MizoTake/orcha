@@ -15,6 +15,7 @@ cargo test --manifest-path samples/todo-lib/Cargo.toml
 - `.orcha/`: サンプル用オーケストレーション状態ファイル群
 - `.orcha/orcha.yml`: orcha が実行時に参照する機械設定（検証コマンド/完了条件/エージェント設定）
   - `agents.local_llm_codex` / `agents.local_llm_claude` / `agents.local_llm_opencode` に具体設定を記載
+  - CLI例では `model` を省略し、各CLIツール側の既定モデルを利用する構成を記載
   - `agents.local_llm_codex_manual_flags` で `ensure_no_permission_flags: false` の指定例を記載
   - `agents.local_llm_opencode_json` で `args` の差分指定例を記載
   - `agents.local_llm` と `execution` が実際に使われる設定

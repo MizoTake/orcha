@@ -36,11 +36,16 @@ impl AppConfig {
                 path: cfg_path,
                 reason: e.to_string(),
             })?;
+        let local_llm_model = resolve_local_llm_model(&machine);
+        let local_llm_mode = machine.agents.local_llm.mode.clone();
+        let local_llm_endpoint = machine.agents.local_llm.endpoint.clone();
+        let local_llm_cli = machine.agents.local_llm.cli.clone();
+
         Ok(Self {
-            local_llm_mode: machine.agents.local_llm.mode,
-            local_llm_endpoint: machine.agents.local_llm.endpoint,
-            local_llm_model: machine.agents.local_llm.model,
-            local_llm_cli: machine.agents.local_llm.cli,
+            local_llm_mode,
+            local_llm_endpoint,
+            local_llm_model,
+            local_llm_cli,
 
             anthropic_api_key: env_api_key(&machine.agents.anthropic.api_key_env),
             anthropic_model: machine.agents.anthropic.model,
@@ -98,4 +103,71 @@ fn env_api_key(name: &str) -> Option<String> {
         return None;
     }
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+fn resolve_local_llm_model(machine: &MachineConfig) -> String {
+    if let Some(model) = machine
+        .agents
+        .local_llm
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    {
+        return model.to_string();
+    }
+
+    match machine.agents.local_llm.mode {
+        LocalLlmMode::Http => "llama3.2".to_string(),
+        LocalLlmMode::Cli => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tempfile::TempDir;
+
+    use super::AppConfig;
+
+    #[test]
+    fn cli_without_model_keeps_model_empty() {
+        let dir = TempDir::new().unwrap();
+        let yml = r#"
+version: 1
+agents:
+  local_llm:
+    mode: cli
+    cli:
+      command: codex
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+        std::fs::write(dir.path().join("orcha.yml"), yml).unwrap();
+
+        let cfg = AppConfig::from_orch_dir(Path::new(dir.path())).unwrap();
+        assert!(cfg.local_llm_model.is_empty());
+    }
+
+    #[test]
+    fn http_without_model_uses_local_default_model() {
+        let dir = TempDir::new().unwrap();
+        let yml = r#"
+version: 1
+agents:
+  local_llm:
+    mode: http
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+        std::fs::write(dir.path().join("orcha.yml"), yml).unwrap();
+
+        let cfg = AppConfig::from_orch_dir(Path::new(dir.path())).unwrap();
+        assert_eq!(cfg.local_llm_model, "llama3.2");
+    }
 }
