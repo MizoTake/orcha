@@ -7,6 +7,7 @@ use crate::core::error::OrchaError;
 use crate::core::health::Health;
 use crate::core::status::StatusFile;
 use crate::core::task::TaskState;
+use crate::machine_config::MachineConfig;
 
 /// Execute `orcha status`: display status.md dashboard.
 pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
@@ -19,6 +20,10 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     }
 
     let status = StatusFile::load(&status_path).await?;
+    let machine_profile = MachineConfig::load(orch_dir)
+        .ok()
+        .and_then(|m| m.execution.profile);
+    let active_profile = machine_profile.unwrap_or(status.frontmatter.profile);
     let tasks = status.tasks().unwrap_or_default();
 
     let health = Health::evaluate(
@@ -38,8 +43,11 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     );
     println!(
         "  Profile: {}",
-        status.frontmatter.profile.to_string().cyan()
+        active_profile.to_string().cyan()
     );
+    if machine_profile.is_some() {
+        println!("  Profile source: {}", "orcha.yml execution.profile".dimmed());
+    }
     println!(
         "  Cycle:   {}",
         status.frontmatter.cycle.to_string().bold()

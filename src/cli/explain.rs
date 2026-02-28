@@ -8,6 +8,7 @@ use crate::core::gate;
 use crate::core::health::Health;
 use crate::core::profile::ProfileRules;
 use crate::core::status::StatusFile;
+use crate::machine_config::MachineConfig;
 
 /// Execute `orcha explain`: show current decision reasoning.
 pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
@@ -20,8 +21,13 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     }
 
     let status = StatusFile::load(&status_path).await?;
+    let machine = MachineConfig::load(orch_dir)?;
+    let active_profile = machine
+        .execution
+        .profile
+        .unwrap_or(status.frontmatter.profile);
     let tasks = status.tasks().unwrap_or_default();
-    let profile_rules = ProfileRules::from_name(status.frontmatter.profile);
+    let profile_rules = ProfileRules::from_name(active_profile);
 
     println!("{}", "═══ Decision Reasoning ═══".bold());
     println!();
@@ -30,7 +36,12 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     println!("{}", "Current State:".bold());
     println!("  Cycle:   {}", status.frontmatter.cycle);
     println!("  Phase:   {}", status.frontmatter.phase);
-    println!("  Profile: {}", status.frontmatter.profile);
+    println!("  Profile: {}", active_profile);
+    if machine.execution.profile.is_some() {
+        println!("  Profile source: orcha.yml execution.profile");
+    } else {
+        println!("  Profile source: status.md frontmatter");
+    }
     println!();
 
     // Profile rules

@@ -8,7 +8,7 @@ use crate::core::status::StatusFile;
 use crate::core::status_log;
 
 /// Phase 1: Briefing
-/// Read goal, status, team, inbox and prepare context summary for the cycle.
+/// Read goal, status, inbox and prepare context summary for the cycle.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
@@ -16,7 +16,6 @@ pub async fn execute(
 ) -> anyhow::Result<CycleDecision> {
     // Load context files
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let team = tokio::fs::read_to_string(orch_dir.join("team.md")).await?;
     let role = tokio::fs::read_to_string(orch_dir.join("roles").join("scribe.md")).await?;
     let inbox = handoff::read_handoff(&orch_dir.join("handoff").join("inbox.md")).await?;
 
@@ -28,15 +27,10 @@ pub async fn execute(
             },
             ContextFile {
                 name: "status.md".into(),
-                content: format!("Cycle: {}\nPhase: {}\n\n{}",
-                    status.frontmatter.cycle,
-                    status.frontmatter.phase,
-                    status.content
+                content: format!(
+                    "Cycle: {}\nPhase: {}\n\n{}",
+                    status.frontmatter.cycle, status.frontmatter.phase, status.content
                 ),
-            },
-            ContextFile {
-                name: "team.md".into(),
-                content: team,
             },
             ContextFile {
                 name: "scribe.md".into(),
@@ -75,7 +69,8 @@ pub async fn execute(
     }
 
     // Update status notes with briefing summary
-    let briefing_note = format!("## Briefing (Cycle {})\n\n{}",
+    let briefing_note = format!(
+        "## Briefing (Cycle {})\n\n{}",
         status.frontmatter.cycle,
         truncate_content(&response.content, 500)
     );

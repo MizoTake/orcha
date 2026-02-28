@@ -1,37 +1,45 @@
 use std::path::Path;
 
 use crate::agent::router::AgentRouter;
-use crate::agent::{AgentContext, ContextFile};
 use crate::core::cycle::{CycleDecision, StopReason, MAX_CYCLES};
 use crate::core::profile::ProfileName;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::TaskState;
+use crate::core::task::{Task, TaskState};
+use crate::machine_config::MachineConfig;
 
 /// Phase 7: Decide
 /// Determine next action: next cycle, done, blocked, or escalate.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
-    router: &AgentRouter,
+    _router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let tasks = status.tasks()?;
+    let machine = MachineConfig::load(orch_dir)?;
+    let criteria_count = machine.execution.acceptance_criteria.len();
 
-    // Check if all acceptance criteria are met (all tasks done + verify passed)
-    let all_done = tasks.iter().all(|t| t.state == TaskState::Done);
     let verify_passed = status.content.contains("Overall: PASS");
-
-    if all_done && verify_passed {
+    if completion_satisfied(&tasks, verify_passed, criteria_count) {
         status_log::append(
             &orch_dir.join("status_log.md"),
             "decide",
             "planner",
             "orch",
-            "All tasks done and verification passed. Goal achieved!",
+            &format!(
+                "Goal achieved. Tasks done: {}/{}; acceptance criteria: {}",
+                tasks.iter().filter(|t| t.state == TaskState::Done).count(),
+                tasks.len(),
+                criteria_count
+            ),
         )
         .await?;
         return Ok(CycleDecision::Done);
     }
+
+    let verify_failed = status.content.contains("Overall: FAIL");
+    let has_blocked = tasks.iter().any(|t| t.state == TaskState::Blocked);
+    let done_count = tasks.iter().filter(|t| t.state == TaskState::Done).count();
 
     // Check stop conditions
     let next_cycle = status.frontmatter.cycle + 1;
@@ -47,10 +55,6 @@ pub async fn execute(
         return Ok(CycleDecision::Blocked(StopReason::MaxCyclesReached));
     }
 
-    // Check for repeated failures
-    let verify_failed = status.content.contains("Overall: FAIL");
-    let has_blocked = tasks.iter().any(|t| t.state == TaskState::Blocked);
-
     if (verify_failed || has_blocked)
         && status.frontmatter.profile == ProfileName::LocalOnly
     {
@@ -65,74 +69,83 @@ pub async fn execute(
         return Ok(CycleDecision::Blocked(StopReason::LocalOnlyStuck));
     }
 
-    // Ask planner agent for decision reasoning
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let role = tokio::fs::read_to_string(orch_dir.join("roles").join("planner.md")).await?;
-
-    let context = AgentContext {
-        context_files: vec![
-            ContextFile {
-                name: "goal.md".into(),
-                content: goal,
-            },
-            ContextFile {
-                name: "status.md".into(),
-                content: status.content.clone(),
-            },
-            ContextFile {
-                name: "planner.md".into(),
-                content: role,
-            },
-        ],
-        instruction: format!(
-            "Cycle {} has completed. Review the current state:\n\
-             - Tasks done: {}/{}\n\
-             - Verification: {}\n\
-             - Blocked tasks: {}\n\n\
-             Decide whether to:\n\
-             1. Start next cycle (more work needed)\n\
-             2. Mark as done (all criteria met)\n\
-             3. Escalate (need human intervention)\n\n\
-             Respond with exactly one of: NEXT_CYCLE, DONE, or ESCALATE: <reason>",
-            status.frontmatter.cycle,
-            tasks.iter().filter(|t| t.state == TaskState::Done).count(),
-            tasks.len(),
-            if verify_passed { "PASS" } else if verify_failed { "FAIL" } else { "NOT RUN" },
-            tasks.iter().filter(|t| t.state == TaskState::Blocked).count()
-        ),
-    };
-
-    let agent = router.default_agent();
-    let response = agent.respond(&context).await?;
-
-    let decision = parse_decision(&response.content);
-
     status_log::append(
         &orch_dir.join("status_log.md"),
         "decide",
         "planner",
-        &response.model_used,
-        &format!("Decision: {:?}", decision),
+        "orch",
+        &format!(
+            "Continuing to next cycle. Tasks done: {}/{}; verify_passed: {}; blocked: {}; acceptance criteria: {}",
+            done_count,
+            tasks.len(),
+            verify_passed,
+            has_blocked,
+            criteria_count
+        ),
     )
     .await?;
 
-    Ok(decision)
+    Ok(CycleDecision::NextCycle)
 }
 
-fn parse_decision(response: &str) -> CycleDecision {
-    let upper = response.to_uppercase();
-    if upper.contains("DONE") {
-        CycleDecision::Done
-    } else if upper.contains("ESCALATE") {
-        let reason = response
-            .split("ESCALATE")
-            .nth(1)
-            .map(|s| s.trim().trim_start_matches(':').trim())
-            .unwrap_or("Agent requested escalation")
-            .to_string();
-        CycleDecision::Escalate(reason)
-    } else {
-        // Default to next cycle
-        CycleDecision::NextCycle
+fn completion_satisfied(tasks: &[Task], verify_passed: bool, criteria_count: usize) -> bool {
+    if !verify_passed {
+        return false;
+    }
+
+    let done_count = tasks.iter().filter(|t| t.state == TaskState::Done).count();
+    let all_tasks_done = !tasks.is_empty() && done_count == tasks.len();
+    if !all_tasks_done {
+        return false;
+    }
+
+    criteria_count == 0 || done_count >= criteria_count
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::task::{Task, TaskState};
+
+    use super::completion_satisfied;
+
+    fn sample_task(id: &str, state: TaskState) -> Task {
+        Task {
+            id: id.to_string(),
+            title: format!("task {}", id),
+            state,
+            owner: String::new(),
+            evidence: String::new(),
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn completion_requires_verify_pass() {
+        let tasks = vec![sample_task("T1", TaskState::Done)];
+        assert!(!completion_satisfied(&tasks, false, 1));
+    }
+
+    #[test]
+    fn completion_requires_all_tasks_done() {
+        let tasks = vec![
+            sample_task("T1", TaskState::Done),
+            sample_task("T2", TaskState::Todo),
+        ];
+        assert!(!completion_satisfied(&tasks, true, 2));
+    }
+
+    #[test]
+    fn completion_requires_non_empty_tasks() {
+        let tasks: Vec<Task> = Vec::new();
+        assert!(!completion_satisfied(&tasks, true, 0));
+    }
+
+    #[test]
+    fn completion_succeeds_with_done_tasks_and_verify_pass() {
+        let tasks = vec![
+            sample_task("T1", TaskState::Done),
+            sample_task("T2", TaskState::Done),
+        ];
+        assert!(completion_satisfied(&tasks, true, 2));
     }
 }

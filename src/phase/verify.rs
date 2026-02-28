@@ -4,17 +4,15 @@ use crate::agent::verifier;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::machine_config::MachineConfig;
 
 /// Phase 6: Verify
-/// Run verification commands from goal.md and report results.
+/// Run verification commands from orcha.yml and report results.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
 ) -> anyhow::Result<CycleDecision> {
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-
-    // Extract verification commands from goal.md
-    let commands = extract_verify_commands(&goal);
+    let commands = verification_commands_from_config(orch_dir)?;
 
     if commands.is_empty() {
         status_log::append(
@@ -22,7 +20,7 @@ pub async fn execute(
             "verify",
             "verifier",
             "orch",
-            "No verification commands configured",
+            "No verification commands configured in orcha.yml",
         )
         .await?;
         return Ok(CycleDecision::NextPhase);
@@ -53,36 +51,9 @@ pub async fn execute(
     Ok(CycleDecision::NextPhase)
 }
 
-/// Extract verification commands from goal.md.
-/// Commands are in code blocks after "## Verification Commands".
-fn extract_verify_commands(goal: &str) -> Vec<String> {
-    let mut commands = Vec::new();
-    let mut in_verify_section = false;
-    let mut in_code_block = false;
-
-    for line in goal.lines() {
-        if line.starts_with("## Verification") {
-            in_verify_section = true;
-            continue;
-        }
-        if in_verify_section && line.starts_with("## ") {
-            break; // Next section
-        }
-        if in_verify_section {
-            if line.starts_with("```") {
-                in_code_block = !in_code_block;
-                continue;
-            }
-            if in_code_block {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    commands.push(trimmed.to_string());
-                }
-            }
-        }
-    }
-
-    commands
+fn verification_commands_from_config(orch_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let cfg = MachineConfig::load(orch_dir)?;
+    Ok(cfg.execution.verification.commands)
 }
 
 fn update_latest_notes(content: &mut String, note: &str) {
@@ -103,35 +74,34 @@ fn update_latest_notes(content: &mut String, note: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use tempfile::TempDir;
+
+    use crate::machine_config::MachineConfig;
+
     use super::*;
 
+    fn write_machine_config(dir: &Path, commands: &[&str]) {
+        let mut cfg = MachineConfig::default();
+        cfg.execution.verification.commands = commands.iter().map(|s| s.to_string()).collect();
+        let yml = serde_yaml::to_string(&cfg).unwrap();
+        std::fs::write(dir.join("orcha.yml"), yml).unwrap();
+    }
+
     #[test]
-    fn extract_commands_from_goal() {
-        let goal = r#"# Goal
-
-## Background
-
-Some background.
-
-## Verification Commands
-
-```
-cargo test
-cargo clippy
-```
-
-## Quality Priority
-
-speed
-"#;
-        let cmds = extract_verify_commands(goal);
+    fn reads_commands_from_machine_config() {
+        let temp = TempDir::new().unwrap();
+        write_machine_config(temp.path(), &["cargo test", "cargo clippy"]);
+        let cmds = verification_commands_from_config(temp.path()).unwrap();
         assert_eq!(cmds, vec!["cargo test", "cargo clippy"]);
     }
 
     #[test]
-    fn extract_no_commands() {
-        let goal = "# Goal\n\n## Background\n\nNo verify section.\n";
-        let cmds = extract_verify_commands(goal);
+    fn reads_empty_commands_from_machine_config() {
+        let temp = TempDir::new().unwrap();
+        write_machine_config(temp.path(), &[]);
+        let cmds = verification_commands_from_config(temp.path()).unwrap();
         assert!(cmds.is_empty());
     }
 }

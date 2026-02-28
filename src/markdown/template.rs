@@ -18,8 +18,13 @@ pub fn goal_md() -> &'static str {
 
 ## Verification Commands
 
-```
-echo "replace with actual verification commands"
+Execution commands are defined in `orcha.yml` under:
+
+```yaml
+execution:
+  verification:
+    commands:
+      - "cargo test"
 ```
 
 ## Quality Priority
@@ -29,43 +34,38 @@ cost
 "#
 }
 
-pub fn team_md() -> &'static str {
-    r#"# Team
+pub fn orcha_yml() -> &'static str {
+    r#"version: 1
 
-## Principles
+agents:
+  local_llm:
+    mode: "http" # http | cli
+    endpoint: "http://localhost:11434/v1"
+    model: "llama3.2"
+    cli:
+      command: ""        # e.g. "opencode", "vibe-local", "lmstudio"
+      args: []           # e.g. ["chat", "--format", "markdown"]
+      prompt_via_stdin: true
+      model_arg: null    # e.g. "--model" (appended as: --model <model>)
+      ensure_no_permission_flags: true # codex/claude では no-permission 向けフラグを自動付与
+  anthropic:
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: "claude-sonnet-4-20250514"
+  gemini:
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.0-flash"
+  openai:
+    api_key_env: "OPENAI_API_KEY"
+    model: "gpt-4.1"
 
-- Local-first: use local LLM for all standard operations
-- Escalate only when necessary
-
-## Members
-
-### local_llm
-
-- **Strength**: Fast, free, no rate limits
-- **Weakness**: Lower quality for complex reasoning
-- **Cost level**: Free
-- **Use when**: Default for all standard tasks
-
-### codex
-
-- **Strength**: Good at code generation and debugging
-- **Weakness**: Paid API calls
-- **Cost level**: Medium
-- **Use when**: Local LLM fails repeatedly (unblock gate)
-
-### claude
-
-- **Strength**: Excellent reasoning, security review, architecture
-- **Weakness**: Higher cost, rate limits
-- **Cost level**: High
-- **Use when**: Security gate, quality gate, complex review
-
-### gemini
-
-- **Strength**: Large context window, good general reasoning
-- **Weakness**: Paid API calls
-- **Cost level**: Medium
-- **Use when**: Large codebase analysis, alternative review
+execution:
+  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first
+  acceptance_criteria:
+    - "Criterion 1"
+    - "Criterion 2"
+  verification:
+    commands:
+      - "echo \"replace with actual verification commands\""
 "#
 }
 
@@ -219,7 +219,7 @@ Run verification commands to confirm that the implementation meets the acceptanc
 
 ## Checklist
 
-- [ ] Run all verification commands from goal.md
+- [ ] Run all verification commands from orcha.yml (`execution.verification.commands`)
 - [ ] Capture output and exit codes
 - [ ] Report pass/fail status
 
@@ -260,6 +260,156 @@ Provide a briefing document with:
 3. Outstanding issues
 4. Inbox messages (if any)
 5. Recommended focus for this cycle
+"#
+}
+
+pub fn role_sample_planner_backlog_md() -> &'static str {
+    r#"# Role Sample: Planner (Backlog-Driven)
+
+## Mission
+
+Produce a stable backlog aligned to acceptance criteria.
+
+## Rules
+
+- Preserve task IDs once created
+- Split tasks to be completed within one cycle
+- Keep at least one explicit verification task
+"#
+}
+
+pub fn role_sample_planner_risk_first_md() -> &'static str {
+    r#"# Role Sample: Planner (Risk-First)
+
+## Mission
+
+Order tasks by failure impact, not by implementation convenience.
+
+## Rules
+
+- Prioritize auth/data-loss/security risks first
+- Add rollback or mitigation task for each high-risk change
+- Mark risky tasks with clear notes
+"#
+}
+
+pub fn role_sample_implementer_tdd_md() -> &'static str {
+    r#"# Role Sample: Implementer (TDD)
+
+## Mission
+
+Implement using red-green-refactor discipline.
+
+## Rules
+
+- Write or update a failing test first
+- Implement minimum code to pass
+- Refactor while preserving behavior
+"#
+}
+
+pub fn role_sample_implementer_surgical_md() -> &'static str {
+    r#"# Role Sample: Implementer (Surgical)
+
+## Mission
+
+Make the smallest safe diff that solves the task.
+
+## Rules
+
+- Touch only required files
+- Avoid interface changes unless explicitly requested
+- Include concise evidence for each change
+"#
+}
+
+pub fn role_sample_reviewer_security_md() -> &'static str {
+    r#"# Role Sample: Reviewer (Security-First)
+
+## Mission
+
+Detect vulnerabilities and privilege boundary regressions.
+
+## Rules
+
+- Audit authn/authz logic and secret handling
+- Flag dangerous defaults and broad permissions
+- Treat ambiguous security behavior as must-fix
+"#
+}
+
+pub fn role_sample_reviewer_regression_md() -> &'static str {
+    r#"# Role Sample: Reviewer (Regression-First)
+
+## Mission
+
+Prevent behavior regressions and missing edge-case coverage.
+
+## Rules
+
+- Check critical user paths end-to-end
+- Verify backward compatibility expectations
+- Require tests for every fixed defect
+"#
+}
+
+pub fn role_sample_verifier_fast_md() -> &'static str {
+    r#"# Role Sample: Verifier (Fast Feedback)
+
+## Mission
+
+Give fast and repeatable pass/fail feedback.
+
+## Rules
+
+- Run smoke checks first
+- Stop early on first deterministic failure
+- Report the exact failing command and output
+"#
+}
+
+pub fn role_sample_verifier_release_md() -> &'static str {
+    r#"# Role Sample: Verifier (Release Gate)
+
+## Mission
+
+Apply full pre-release verification before marking done.
+
+## Rules
+
+- Run lint, unit, integration, and packaging checks
+- Ensure reproducibility on clean state
+- Block release on flaky or nondeterministic tests
+"#
+}
+
+pub fn role_sample_scribe_compact_md() -> &'static str {
+    r#"# Role Sample: Scribe (Compact)
+
+## Mission
+
+Write short, high-signal briefings.
+
+## Rules
+
+- Keep each section under 5 lines
+- Highlight only blockers and next actions
+- Omit repeated history
+"#
+}
+
+pub fn role_sample_scribe_handoff_md() -> &'static str {
+    r#"# Role Sample: Scribe (Handoff-Heavy)
+
+## Mission
+
+Optimize context for external-tool handoff.
+
+## Rules
+
+- Include decision rationale with evidence links
+- Separate facts, assumptions, and requests explicitly
+- End with a concrete handoff checklist
 "#
 }
 

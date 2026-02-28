@@ -9,9 +9,10 @@ use crate::core::error::OrchaError;
 use crate::core::profile::ProfileRules;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::machine_config::MachineConfig;
 use crate::phase;
 
-/// Execute `orcha run`: run one step from the current phase.
+/// Execute `orcha run`: continue cycles until goal completion or stop condition.
 pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
     let status_path = orch_dir.join("status.md");
     if !status_path.exists() {
@@ -22,6 +23,16 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     }
 
     let mut status = StatusFile::load(&status_path).await?;
+
+    // If execution.profile is configured in orcha.yml, use it as the authoritative profile.
+    let machine = MachineConfig::load(orch_dir)?;
+    if let Some(configured_profile) = machine.execution.profile {
+        if status.frontmatter.profile != configured_profile {
+            status.frontmatter.profile = configured_profile;
+            status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+            status.save(&status_path).await?;
+        }
+    }
 
     // Check stop conditions
     if status.frontmatter.cycle >= MAX_CYCLES {
@@ -44,97 +55,136 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     status.frontmatter.locks.writer = Some(lock_id.clone());
     status.save(&status_path).await?;
 
-    let phase = status.frontmatter.phase;
     let profile_rules = ProfileRules::from_name(status.frontmatter.profile);
     let router = AgentRouter::new(config, &profile_rules)?;
-
-    println!(
-        "{} Cycle {} / Phase: {}",
-        "▶".green(),
-        status.frontmatter.cycle,
-        phase.to_string().yellow()
-    );
-
-    // Log phase start
     let log_path = orch_dir.join("status_log.md");
-    status_log::append(
-        &log_path,
-        &phase.to_string(),
-        phase.role_name(),
-        "orch",
-        &format!("Starting phase: {}", phase),
-    )
-    .await?;
 
-    // Execute the current phase
-    let result = match phase {
-        Phase::Briefing => phase::briefing::execute(orch_dir, &mut status, &router).await,
-        Phase::Plan => phase::plan::execute(orch_dir, &mut status, &router).await,
-        Phase::Impl => phase::impl_phase::execute(orch_dir, &mut status, &router).await,
-        Phase::Review => phase::review::execute(orch_dir, &mut status, &router).await,
-        Phase::Fix => phase::fix::execute(orch_dir, &mut status, &router).await,
-        Phase::Verify => phase::verify::execute(orch_dir, &mut status).await,
-        Phase::Decide => phase::decide::execute(orch_dir, &mut status, &router).await,
-    };
-
-    // Handle phase result
-    match result {
-        Ok(decision) => {
-            match &decision {
-                CycleDecision::NextPhase => {
-                    status.advance_phase();
-                    println!(
-                        "  {} -> Next phase: {}",
-                        "✓".green(),
-                        status.frontmatter.phase.to_string().yellow()
-                    );
+    let mut terminal_error: Option<anyhow::Error> = None;
+    loop {
+        // Check stop conditions before each phase step.
+        if status.frontmatter.cycle >= MAX_CYCLES {
+            terminal_error = Some(
+                OrchaError::StopCondition {
+                    reason: StopReason::MaxCyclesReached.to_string(),
                 }
-                CycleDecision::NextCycle => {
-                    status.start_new_cycle();
-                    println!(
-                        "  {} -> Starting cycle {}",
-                        "↻".cyan(),
-                        status.frontmatter.cycle
-                    );
-                }
-                CycleDecision::Done => {
-                    println!("  {} Goal achieved!", "✓".green().bold());
-                }
-                CycleDecision::Blocked(reason) => {
-                    println!("  {} Blocked: {}", "✗".red(), reason);
-                }
-                CycleDecision::Escalate(msg) => {
-                    println!("  {} Escalation needed: {}", "⚠".yellow(), msg);
-                }
-            }
-
-            // Log result
-            status_log::append(
-                &log_path,
-                &phase.to_string(),
-                phase.role_name(),
-                "orch",
-                &format!("Phase result: {:?}", decision),
-            )
-            .await?;
+                .into(),
+            );
+            break;
         }
-        Err(e) => {
-            println!("  {} Phase failed: {}", "✗".red(), e);
-            status_log::append(
-                &log_path,
-                &phase.to_string(),
-                phase.role_name(),
-                "orch",
-                &format!("Phase failed: {}", e),
-            )
-            .await?;
+
+        let phase = status.frontmatter.phase;
+        println!(
+            "{} Cycle {} / Phase: {}",
+            "▶".green(),
+            status.frontmatter.cycle,
+            phase.to_string().yellow()
+        );
+
+        status_log::append(
+            &log_path,
+            &phase.to_string(),
+            phase.role_name(),
+            "orch",
+            &format!("Starting phase: {}", phase),
+        )
+        .await?;
+
+        let result = match phase {
+            Phase::Briefing => phase::briefing::execute(orch_dir, &mut status, &router).await,
+            Phase::Plan => phase::plan::execute(orch_dir, &mut status, &router).await,
+            Phase::Impl => phase::impl_phase::execute(orch_dir, &mut status, &router).await,
+            Phase::Review => phase::review::execute(orch_dir, &mut status, &router).await,
+            Phase::Fix => phase::fix::execute(orch_dir, &mut status, &router).await,
+            Phase::Verify => phase::verify::execute(orch_dir, &mut status).await,
+            Phase::Decide => phase::decide::execute(orch_dir, &mut status, &router).await,
+        };
+
+        let mut stop = false;
+        match result {
+            Ok(decision) => {
+                match &decision {
+                    CycleDecision::NextPhase => {
+                        status.advance_phase();
+                        println!(
+                            "  {} -> Next phase: {}",
+                            "✓".green(),
+                            status.frontmatter.phase.to_string().yellow()
+                        );
+                    }
+                    CycleDecision::NextCycle => {
+                        status.start_new_cycle();
+                        println!(
+                            "  {} -> Starting cycle {}",
+                            "↻".cyan(),
+                            status.frontmatter.cycle
+                        );
+                    }
+                    CycleDecision::Done => {
+                        println!("  {} Goal achieved!", "✓".green().bold());
+                        stop = true;
+                    }
+                    CycleDecision::Blocked(reason) => {
+                        println!("  {} Blocked: {}", "✗".red(), reason);
+                        terminal_error = Some(
+                            OrchaError::StopCondition {
+                                reason: reason.to_string(),
+                            }
+                            .into(),
+                        );
+                        stop = true;
+                    }
+                    CycleDecision::Escalate(msg) => {
+                        println!("  {} Escalation needed: {}", "⚠".yellow(), msg);
+                        terminal_error = Some(
+                            OrchaError::StopCondition {
+                                reason: format!("Escalation needed: {}", msg),
+                            }
+                            .into(),
+                        );
+                        stop = true;
+                    }
+                }
+
+                status_log::append(
+                    &log_path,
+                    &phase.to_string(),
+                    phase.role_name(),
+                    "orch",
+                    &format!("Phase result: {:?}", decision),
+                )
+                .await?;
+            }
+            Err(err) => {
+                println!("  {} Phase failed: {}", "✗".red(), err);
+                status_log::append(
+                    &log_path,
+                    &phase.to_string(),
+                    phase.role_name(),
+                    "orch",
+                    &format!("Phase failed: {}", err),
+                )
+                .await?;
+                terminal_error = Some(err);
+                stop = true;
+            }
+        }
+
+        status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+        status.save(&status_path).await?;
+
+        if stop {
+            break;
         }
     }
 
-    // Release lock and save
+    // Release lock and save final state.
     status.frontmatter.locks.writer = None;
     status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
     status.save(&status_path).await?;
+
+    if let Some(err) = terminal_error {
+        return Err(err);
+    }
 
     Ok(())
 }

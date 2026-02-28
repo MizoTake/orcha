@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use crate::agent::backend::anthropic::AnthropicAgent;
 use crate::agent::backend::codex::CodexAgent;
 use crate::agent::backend::gemini::GeminiAgent;
+use crate::agent::backend::local_cli::LocalCliAgent;
 use crate::agent::backend::local_llm::LocalLlmAgent;
 use crate::agent::{Agent, AgentKind};
 use crate::config::AppConfig;
 use crate::core::cycle::Phase;
 use crate::core::gate::{self, GateDecision};
 use crate::core::profile::{AgentPreference, ProfileRules};
+use crate::machine_config::LocalLlmMode;
 
 /// Routes agent requests to the appropriate backend based on profile and gates.
 pub struct AgentRouter {
@@ -39,8 +41,12 @@ impl AgentRouter {
     pub fn new(config: &AppConfig, rules: &ProfileRules) -> anyhow::Result<Self> {
         let mut agents: HashMap<AgentKind, Box<dyn Agent>> = HashMap::new();
 
-        // Local LLM is always available
-        agents.insert(AgentKind::LocalLlm, Box::new(LocalLlmAgent::new(config)));
+        // Local LLM backend selection
+        let local_agent: Box<dyn Agent> = match config.local_llm_mode {
+            LocalLlmMode::Http => Box::new(LocalLlmAgent::new(config)),
+            LocalLlmMode::Cli => Box::new(LocalCliAgent::new(config)?),
+        };
+        agents.insert(AgentKind::LocalLlm, local_agent);
 
         // Optionally add paid agents
         if config.has_anthropic() {

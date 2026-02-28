@@ -5,7 +5,8 @@ use crate::agent::{AgentContext, ContextFile};
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::parse_task_table;
+use crate::core::task::{parse_task_table, Task, TaskState};
+use crate::machine_config::MachineConfig;
 
 /// Phase 2: Plan
 /// Planner agent creates or updates the task plan.
@@ -14,6 +15,25 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let existing_tasks = status.tasks()?;
+    let has_remaining_work = existing_tasks
+        .iter()
+        .any(|t| t.state != TaskState::Done);
+    if !existing_tasks.is_empty() && has_remaining_work {
+        status_log::append(
+            &orch_dir.join("status_log.md"),
+            "plan",
+            "planner",
+            "orch",
+            &format!(
+                "Keeping existing task plan ({} tasks, remaining work detected)",
+                existing_tasks.len()
+            ),
+        )
+        .await?;
+        return Ok(CycleDecision::NextPhase);
+    }
+
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role = tokio::fs::read_to_string(orch_dir.join("roles").join("planner.md")).await?;
 
@@ -21,7 +41,7 @@ pub async fn execute(
         context_files: vec![
             ContextFile {
                 name: "goal.md".into(),
-                content: goal,
+                content: goal.clone(),
             },
             ContextFile {
                 name: "status.md".into(),
@@ -47,10 +67,22 @@ pub async fn execute(
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
 
-    // Try to extract task table from the response
+    // Try to extract task table from the planner response.
+    let mut applied_tasks = 0usize;
     if let Ok(new_tasks) = parse_task_table(&response.content) {
         if !new_tasks.is_empty() {
+            applied_tasks = new_tasks.len();
             status.replace_task_table(&new_tasks);
+        }
+    }
+
+    // Fallback: derive initial tasks from machine config acceptance criteria.
+    if applied_tasks == 0 {
+        let machine = MachineConfig::load(orch_dir)?;
+        let fallback_tasks = tasks_from_acceptance_criteria(&machine.execution.acceptance_criteria);
+        if !fallback_tasks.is_empty() {
+            applied_tasks = fallback_tasks.len();
+            status.replace_task_table(&fallback_tasks);
         }
     }
 
@@ -59,12 +91,58 @@ pub async fn execute(
         "plan",
         "planner",
         &response.model_used,
-        &format!(
-            "Plan updated. Tasks: {}",
-            status.tasks().map(|t| t.len()).unwrap_or(0)
-        ),
+        &format!("Plan updated. Tasks initialized: {}", applied_tasks),
     )
     .await?;
 
     Ok(CycleDecision::NextPhase)
+}
+
+fn tasks_from_acceptance_criteria(criteria: &[String]) -> Vec<Task> {
+    criteria
+        .iter()
+        .enumerate()
+        .map(|(idx, c)| Task {
+            id: format!("T{}", idx + 1),
+            title: sanitize_table_cell(c),
+            state: TaskState::Todo,
+            owner: String::new(),
+            evidence: String::new(),
+            notes: "Derived from orcha.yml execution.acceptance_criteria".to_string(),
+        })
+        .collect()
+}
+
+fn sanitize_table_cell(s: &str) -> String {
+    s.replace('|', "/").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::task::TaskState;
+
+    use super::tasks_from_acceptance_criteria;
+
+    #[test]
+    fn builds_tasks_from_acceptance_criteria() {
+        let criteria = vec![
+            "First criterion".to_string(),
+            "Second criterion".to_string(),
+        ];
+
+        let tasks = tasks_from_acceptance_criteria(&criteria);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, "T1");
+        assert_eq!(tasks[0].state, TaskState::Todo);
+        assert_eq!(tasks[1].id, "T2");
+        assert_eq!(tasks[1].state, TaskState::Todo);
+    }
+
+    #[test]
+    fn sanitizes_pipe_for_markdown_table_cell() {
+        let criteria = vec!["API | auth".to_string()];
+
+        let tasks = tasks_from_acceptance_criteria(&criteria);
+        assert_eq!(tasks[0].title, "API / auth");
+    }
 }

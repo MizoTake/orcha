@@ -1,0 +1,33 @@
+version: 1
+
+agents:
+  local_llm:
+    mode: "http"
+    endpoint: "http://localhost:11434/v1"
+    model: "llama3.2"
+    cli:
+      command: ""
+      args: []
+      prompt_via_stdin: true
+      model_arg: null
+      ensure_no_permission_flags: true
+  anthropic:
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: "claude-sonnet-4-20250514"
+  gemini:
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.0-flash"
+  openai:
+    api_key_env: "OPENAI_API_KEY"
+    model: "gpt-4.1"
+
+execution:
+  profile: "cheap_checkpoints"
+  acceptance_criteria:
+    - "`TodoList::add` assigns incremental IDs starting from `1`."
+    - "`TodoList::complete` marks the target item as done and returns `false` for unknown IDs."
+    - "`TodoList::pending_titles` returns only unfinished task titles."
+  verification:
+    commands:
+      - "cargo check --manifest-path samples/todo-lib/Cargo.toml"
+      - "cargo test --manifest-path samples/todo-lib/Cargo.toml"

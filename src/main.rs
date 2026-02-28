@@ -1,7 +1,6 @@
 use clap::Parser;
 
 use orcha::cli::{Cli, Command};
-use orcha::config::AppConfig;
 use orcha::core::error::OrchaError;
 
 #[tokio::main]
@@ -34,6 +33,9 @@ async fn main() {
                         "Available profiles: local_only, cheap_checkpoints, quality_gate, unblock_first"
                     );
                 }
+                OrchaError::MachineConfigError { .. } => {
+                    eprintln!("Hint: Ensure .orcha/orcha.yml exists and is valid YAML.");
+                }
                 _ => {}
             }
         } else {
@@ -44,13 +46,12 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let config = AppConfig::from_env();
-
     match cli.command {
         Command::Init => {
             orcha::cli::init::execute(&cli.orch_dir).await?;
         }
         Command::Run => {
+            let config = orcha::config::AppConfig::from_orch_dir(&cli.orch_dir)?;
             orcha::cli::run::execute(&cli.orch_dir, &config).await?;
         }
         Command::Status => {
@@ -60,6 +61,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             orcha::cli::profile::execute(&cli.orch_dir, &name).await?;
         }
         Command::Explain => {
+            let config = orcha::config::AppConfig::from_orch_dir(&cli.orch_dir)?;
             orcha::cli::explain::execute(&cli.orch_dir, &config).await?;
         }
     }

@@ -14,12 +14,12 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Path to .orch directory
-    #[arg(long, default_value = ".orch")]
+    /// Path to .orcha directory
+    #[arg(long, global = true, default_value = ".orcha")]
     pub orch_dir: PathBuf,
 
     /// Enable verbose logging
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub verbose: bool,
 }
 
@@ -28,7 +28,7 @@ pub enum Command {
     /// Initialize .orcha/ directory with templates
     Init,
 
-    /// Execute one step from current phase
+    /// Execute cycles until goal is done or a stop condition is reached
     Run,
 
     /// Display current status
@@ -42,4 +42,35 @@ pub enum Command {
 
     /// Show current decision reasoning
     Explain,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    #[test]
+    fn cli_uses_orcha_as_default_directory() {
+        let cli = Cli::parse_from(["orcha", "status"]);
+        assert!(matches!(cli.command, Command::Status));
+        assert_eq!(cli.orch_dir, PathBuf::from(".orcha"));
+        assert!(!cli.verbose);
+    }
+
+    #[test]
+    fn cli_accepts_custom_orch_dir() {
+        let cli = Cli::parse_from(["orcha", "--orch-dir", ".orch", "run"]);
+        assert!(matches!(cli.command, Command::Run));
+        assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
+    }
+
+    #[test]
+    fn cli_accepts_custom_orch_dir_after_subcommand() {
+        let cli = Cli::parse_from(["orcha", "status", "--orch-dir", ".orch"]);
+        assert!(matches!(cli.command, Command::Status));
+        assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
+    }
 }

@@ -39,4 +39,7 @@ pub enum OrchaError {
 
     #[error("Goal not configured: please edit .orcha/goal.md")]
     GoalNotConfigured,
+
+    #[error("Machine config error at {path}: {reason}")]
+    MachineConfigError { path: PathBuf, reason: String },
 }
