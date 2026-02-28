@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
+use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -15,13 +16,13 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+
     let existing_tasks = status.tasks()?;
-    let has_remaining_work = existing_tasks
-        .iter()
-        .any(|t| t.state != TaskState::Done);
+    let has_remaining_work = existing_tasks.iter().any(|t| t.state != TaskState::Done);
     if !existing_tasks.is_empty() && has_remaining_work {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "plan",
             "planner",
             "orch",
@@ -66,6 +67,15 @@ pub async fn execute(
 
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        "plan",
+        "planner",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
 
     // Try to extract task table from the planner response.
     let mut applied_tasks = 0usize;
@@ -87,7 +97,7 @@ pub async fn execute(
     }
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "plan",
         "planner",
         &response.model_used,

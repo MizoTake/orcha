@@ -6,7 +6,7 @@ use crate::agent::router::AgentRouter;
 use crate::config::AppConfig;
 use crate::core::cycle::{CycleDecision, Phase, StopReason, MAX_CYCLES};
 use crate::core::error::OrchaError;
-use crate::core::profile::ProfileRules;
+use crate::core::agent_workspace;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
 use crate::machine_config::MachineConfig;
@@ -14,7 +14,7 @@ use crate::phase;
 
 /// Execute `orcha run`: continue cycles until goal completion or stop condition.
 pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
-    let status_path = orch_dir.join("status.md");
+    let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
         return Err(OrchaError::NotInitialized {
             path: orch_dir.to_path_buf(),
@@ -24,15 +24,7 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
 
     let mut status = StatusFile::load(&status_path).await?;
 
-    // If execution.profile is configured in orcha.yml, use it as the authoritative profile.
     let machine = MachineConfig::load(orch_dir)?;
-    if let Some(configured_profile) = machine.execution.profile {
-        if status.frontmatter.profile != configured_profile {
-            status.frontmatter.profile = configured_profile;
-            status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
-            status.save(&status_path).await?;
-        }
-    }
 
     // Check stop conditions
     if status.frontmatter.cycle >= MAX_CYCLES {
@@ -55,9 +47,7 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     status.frontmatter.locks.writer = Some(lock_id.clone());
     status.save(&status_path).await?;
 
-    let profile_rules = ProfileRules::from_name(status.frontmatter.profile);
-    let router = AgentRouter::new(config, &profile_rules)?;
-    let log_path = orch_dir.join("status_log.md");
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
     let mut terminal_error: Option<anyhow::Error> = None;
     loop {
@@ -71,6 +61,15 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
             );
             break;
         }
+
+        let resolved_profile_name = machine
+            .execution
+            .resolve_profile_name(status.frontmatter.cycle, status.frontmatter.profile);
+        let profile_rules = machine
+            .execution
+            .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);
+        let router = AgentRouter::new(config, &profile_rules)?;
+        status.frontmatter.profile = resolved_profile_name;
 
         let phase = status.frontmatter.phase;
         println!(

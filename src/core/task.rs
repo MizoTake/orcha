@@ -59,10 +59,7 @@ pub fn parse_task_table(markdown: &str) -> anyhow::Result<Vec<Task>> {
             continue;
         }
 
-        let cols: Vec<&str> = trimmed
-            .split('|')
-            .map(|s| s.trim())
-            .collect::<Vec<_>>();
+        let cols: Vec<&str> = trimmed.split('|').map(|s| s.trim()).collect::<Vec<_>>();
 
         // Skip empty first/last from split, need at least 7 parts (empty + 6 cols + empty)
         if cols.len() < 8 {
@@ -121,7 +118,8 @@ mod tests {
 
     #[test]
     fn parse_empty_table() {
-        let table = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n";
+        let table =
+            "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n";
         let tasks = parse_task_table(table).unwrap();
         assert!(tasks.is_empty());
     }
@@ -140,16 +138,14 @@ mod tests {
 
     #[test]
     fn render_roundtrip() {
-        let tasks = vec![
-            Task {
-                id: "T1".into(),
-                title: "Setup".into(),
-                state: TaskState::Todo,
-                owner: "local_llm".into(),
-                evidence: "".into(),
-                notes: "".into(),
-            },
-        ];
+        let tasks = vec![Task {
+            id: "T1".into(),
+            title: "Setup".into(),
+            state: TaskState::Todo,
+            owner: "local_llm".into(),
+            evidence: "".into(),
+            notes: "".into(),
+        }];
         let rendered = render_task_table(&tasks);
         let parsed = parse_task_table(&rendered).unwrap();
         assert_eq!(parsed.len(), 1);

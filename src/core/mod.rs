@@ -1,3 +1,4 @@
+pub mod agent_workspace;
 pub mod cycle;
 pub mod error;
 pub mod gate;

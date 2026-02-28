@@ -14,7 +14,10 @@ pub async fn append(
     message: &str,
 ) -> anyhow::Result<()> {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-    let line = format!("{} [{}] {}({}): {}\n", timestamp, phase, role, agent, message);
+    let line = format!(
+        "{} [{}] {}({}): {}\n",
+        timestamp, phase, role, agent, message
+    );
 
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)

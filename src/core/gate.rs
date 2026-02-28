@@ -10,16 +10,12 @@ pub enum GateDecision {
     RecommendAgent(AgentPreference),
 }
 
-static SECURITY_KEYWORDS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(auth|crypto|security|public[\s_-]?api)\b").unwrap()
-});
+static SECURITY_KEYWORDS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(auth|crypto|security|public[\s_-]?api)\b").unwrap());
 
 /// Security Gate: check for auth/crypto/security keywords in diff or file paths.
 /// If found, require Claude review.
-pub fn evaluate_security_gate(
-    diff_content: Option<&str>,
-    file_paths: &[String],
-) -> GateDecision {
+pub fn evaluate_security_gate(diff_content: Option<&str>, file_paths: &[String]) -> GateDecision {
     // Check file paths
     for path in file_paths {
         if SECURITY_KEYWORDS.is_match(path) {
@@ -38,10 +34,7 @@ pub fn evaluate_security_gate(
 }
 
 /// Unblock Gate: if verify has failed >= threshold times, escalate.
-pub fn evaluate_unblock_gate(
-    consecutive_failures: u32,
-    rules: &ProfileRules,
-) -> GateDecision {
+pub fn evaluate_unblock_gate(consecutive_failures: u32, rules: &ProfileRules) -> GateDecision {
     if let Some(ref esc) = rules.escalation {
         if consecutive_failures >= esc.failure_threshold {
             // Check if continued failure threshold is met
@@ -90,7 +83,8 @@ mod tests {
 
     #[test]
     fn security_gate_passes_normal_code() {
-        let decision = evaluate_security_gate(Some("added button component"), &["src/ui.rs".into()]);
+        let decision =
+            evaluate_security_gate(Some("added button component"), &["src/ui.rs".into()]);
         assert_eq!(decision, GateDecision::UseDefault);
     }
 
@@ -98,10 +92,7 @@ mod tests {
     fn unblock_gate_triggers_after_threshold() {
         let rules = ProfileRules::from_name(ProfileName::CheapCheckpoints);
         let decision = evaluate_unblock_gate(2, &rules);
-        assert_eq!(
-            decision,
-            GateDecision::RequireAgent(AgentPreference::Codex)
-        );
+        assert_eq!(decision, GateDecision::RequireAgent(AgentPreference::Codex));
     }
 
     #[test]

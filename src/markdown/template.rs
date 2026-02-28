@@ -60,6 +60,10 @@ agents:
 
 execution:
   profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first
+  profile_strategy:
+    alternating: []    # e.g. ["cheap_checkpoints", "quality_gate"] (cycleごとに交互切替)
+    every_n_cycles: [] # e.g. [{ interval: 3, profile: "unblock_first", offset: 0 }]
+    mixins: []         # e.g. [{ from: "quality_gate", fields: ["review_agent", "security_gate"] }]
   acceptance_criteria:
     - "Criterion 1"
     - "Criterion 2"
@@ -414,11 +418,15 @@ Optimize context for external-tool handoff.
 }
 
 pub fn inbox_md() -> &'static str {
-    "# Inbox\n\nNo pending messages.\n\n<!-- External tools: append messages here. Do not edit status.md directly. -->\n"
+    "# Inbox\n\nNo pending messages.\n\n<!-- External tools: append messages here. Do not edit agentworkspace/status.md directly. -->\n"
 }
 
 pub fn outbox_md() -> &'static str {
     "# Outbox\n\nNo pending messages.\n\n<!-- Orchestrator writes messages here for external tools to pick up. -->\n"
+}
+
+pub fn agent_workspace_readme_md() -> &'static str {
+    "# Agent Workspace\n\nGenerated artifacts from agent responses are written here.\n`status.md` and `status_log.md` are also managed in this directory.\n\nDo not edit files in this directory manually while a run is active.\n"
 }
 
 pub fn profile_local_only_md() -> &'static str {

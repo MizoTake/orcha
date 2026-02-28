@@ -31,10 +31,11 @@ impl AppConfig {
     /// Load execution config from `.orcha/orcha.yml` and resolve API keys from env vars.
     pub fn from_orch_dir(orch_dir: &Path) -> anyhow::Result<Self> {
         let cfg_path = MachineConfig::path(orch_dir);
-        let machine = MachineConfig::load(orch_dir).map_err(|e| OrchaError::MachineConfigError {
-            path: cfg_path,
-            reason: e.to_string(),
-        })?;
+        let machine =
+            MachineConfig::load(orch_dir).map_err(|e| OrchaError::MachineConfigError {
+                path: cfg_path,
+                reason: e.to_string(),
+            })?;
         Ok(Self {
             local_llm_mode: machine.agents.local_llm.mode,
             local_llm_endpoint: machine.agents.local_llm.endpoint,
@@ -73,13 +74,14 @@ impl AppConfig {
                 .unwrap_or_else(|_| "gemini-2.0-flash".to_string()),
 
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
-            codex_model: std::env::var("CODEX_MODEL")
-                .unwrap_or_else(|_| "gpt-4.1".to_string()),
+            codex_model: std::env::var("CODEX_MODEL").unwrap_or_else(|_| "gpt-4.1".to_string()),
         }
     }
 
     pub fn has_anthropic(&self) -> bool {
-        self.anthropic_api_key.as_ref().is_some_and(|k| !k.is_empty())
+        self.anthropic_api_key
+            .as_ref()
+            .is_some_and(|k| !k.is_empty())
     }
 
     pub fn has_gemini(&self) -> bool {

@@ -28,11 +28,7 @@ impl LocalCliAgent {
 
         Ok(Self {
             command: cli.command.clone(),
-            args: with_no_permission_flags(
-                &cli.command,
-                &cli.args,
-                cli.ensure_no_permission_flags,
-            ),
+            args: with_no_permission_flags(&cli.command, &cli.args, cli.ensure_no_permission_flags),
             model: config.local_llm_model.clone(),
             model_arg: cli.model_arg.clone(),
             prompt_via_stdin: cli.prompt_via_stdin,
@@ -99,8 +95,8 @@ fn ensure_codex_no_permission_args(args: &mut Vec<String>) {
         return;
     }
 
-    let has_never = has_flag_value(args, "--ask-for-approval", "never")
-        || has_flag_value(args, "-a", "never");
+    let has_never =
+        has_flag_value(args, "--ask-for-approval", "never") || has_flag_value(args, "-a", "never");
     if !has_never {
         args.push("--ask-for-approval".to_string());
         args.push("never".to_string());
@@ -208,7 +204,11 @@ mod tests {
         sample_config_with(command, default_cli_args(), true)
     }
 
-    fn sample_config_with(command: &str, args: Vec<String>, ensure_no_permission: bool) -> AppConfig {
+    fn sample_config_with(
+        command: &str,
+        args: Vec<String>,
+        ensure_no_permission: bool,
+    ) -> AppConfig {
         AppConfig {
             local_llm_mode: LocalLlmMode::Cli,
             local_llm_endpoint: "http://localhost:11434/v1".to_string(),

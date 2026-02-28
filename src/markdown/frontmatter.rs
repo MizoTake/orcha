@@ -23,7 +23,9 @@ pub fn parse<T: DeserializeOwned>(input: &str) -> anyhow::Result<Document<T>> {
     let yaml_str = &after_first[..end_pos];
     let content_start = end_pos + 4; // skip "\n---"
     let content = if content_start < after_first.len() {
-        after_first[content_start..].trim_start_matches('\n').to_string()
+        after_first[content_start..]
+            .trim_start_matches('\n')
+            .to_string()
     } else {
         String::new()
     };

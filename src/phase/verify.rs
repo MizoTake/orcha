@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::agent::verifier;
+use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -8,15 +9,13 @@ use crate::machine_config::MachineConfig;
 
 /// Phase 6: Verify
 /// Run verification commands from orcha.yml and report results.
-pub async fn execute(
-    orch_dir: &Path,
-    status: &mut StatusFile,
-) -> anyhow::Result<CycleDecision> {
+pub async fn execute(orch_dir: &Path, status: &mut StatusFile) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let commands = verification_commands_from_config(orch_dir)?;
 
     if commands.is_empty() {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "verify",
             "verifier",
             "orch",
@@ -31,7 +30,7 @@ pub async fn execute(
     let formatted = verifier::format_result(&result);
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "verify",
         "verifier",
         "orch",

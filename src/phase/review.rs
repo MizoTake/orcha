@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::{AgentRouter, GateContext};
 use crate::agent::{AgentContext, ContextFile};
+use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, Phase};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -13,6 +14,8 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role = tokio::fs::read_to_string(orch_dir.join("roles").join("reviewer.md")).await?;
 
@@ -21,10 +24,8 @@ pub async fn execute(
     let diff_lines = diff.as_ref().map(|d| d.lines().count()).unwrap_or(0);
 
     // Read outbox to see latest implementation output
-    let outbox = crate::core::handoff::read_handoff(
-        &orch_dir.join("handoff").join("outbox.md"),
-    )
-    .await?;
+    let outbox =
+        crate::core::handoff::read_handoff(&orch_dir.join("handoff").join("outbox.md")).await?;
 
     let context = AgentContext {
         context_files: vec![
@@ -74,6 +75,15 @@ pub async fn execute(
 
     let agent = router.select(Phase::Review, &gate_ctx);
     let response = agent.respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        "review",
+        "reviewer",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
 
     // Parse review findings
     let has_must_fix = response.content.contains("Must-fix:")
@@ -83,7 +93,7 @@ pub async fn execute(
     let needs_paid = response.content.contains("paid_review_required: yes");
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "review",
         "reviewer",
         &response.model_used,
@@ -95,9 +105,9 @@ pub async fn execute(
     .await?;
 
     // Store review output in status notes
-    let review_note = format!("## Review (Cycle {})\n\n{}",
-        status.frontmatter.cycle,
-        &response.content
+    let review_note = format!(
+        "## Review (Cycle {})\n\n{}",
+        status.frontmatter.cycle, &response.content
     );
     update_latest_notes(&mut status.content, &review_note);
 

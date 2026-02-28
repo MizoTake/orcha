@@ -87,10 +87,8 @@ impl AgentRouter {
         }
 
         // 2. Evaluate unblock gate
-        let unblock = gate::evaluate_unblock_gate(
-            gate_ctx.consecutive_verify_failures,
-            &self.profile_rules,
-        );
+        let unblock =
+            gate::evaluate_unblock_gate(gate_ctx.consecutive_verify_failures, &self.profile_rules);
         if let GateDecision::RequireAgent(pref) = unblock {
             if let Some(agent) = self.get_by_preference(pref) {
                 return agent;

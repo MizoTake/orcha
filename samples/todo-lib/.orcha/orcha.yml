@@ -6,10 +6,10 @@ agents:
     endpoint: "http://localhost:11434/v1"
     model: "llama3.2"
     cli:
-      command: ""
-      args: []
+      command: "" # e.g. codex
+      args: [] # e.g. ["exec", "--skip-git-repo-check"]
       prompt_via_stdin: true
-      model_arg: null
+      model_arg: null # e.g. -m
       ensure_no_permission_flags: true
   anthropic:
     api_key_env: "ANTHROPIC_API_KEY"
@@ -23,6 +23,12 @@ agents:
 
 execution:
   profile: "cheap_checkpoints"
+  # More patterns: see templates/configs/profile-patterns.yml
+  profile_strategy:
+    alternating: []
+    every_n_cycles: []
+    mixins: []
+  # Codex CLI sample: see templates/configs/local-llm-cli-codex.yml
   acceptance_criteria:
     - "`TodoList::add` assigns incremental IDs starting from `1`."
     - "`TodoList::complete` marks the target item as done and returns `false` for unknown IDs."

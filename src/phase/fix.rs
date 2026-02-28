@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
+use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -14,6 +15,8 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+
     // Check if there are must-fix items in the latest notes
     let has_fixes_needed = status.content.contains("Must-fix:")
         && !status.content.contains("Must-fix:\n- (none)")
@@ -21,7 +24,7 @@ pub async fn execute(
 
     if !has_fixes_needed {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "fix",
             "implementer",
             "orch",
@@ -49,17 +52,27 @@ pub async fn execute(
                 content: role,
             },
         ],
-        instruction: "Review the must-fix items from the review phase and apply the necessary fixes.\n\
+        instruction:
+            "Review the must-fix items from the review phase and apply the necessary fixes.\n\
              The review findings are in the Latest Notes section of status.md.\n\
              Provide the fixes and evidence of completion."
-            .to_string(),
+                .to_string(),
     };
 
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        "fix",
+        "implementer",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "fix",
         "implementer",
         &response.model_used,

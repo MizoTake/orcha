@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
+use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::handoff;
 use crate::core::status::StatusFile;
@@ -14,6 +15,8 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+
     // Load context files
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role = tokio::fs::read_to_string(orch_dir.join("roles").join("scribe.md")).await?;
@@ -52,10 +55,19 @@ pub async fn execute(
 
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        "briefing",
+        "scribe",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
 
     // Log the briefing
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "briefing",
         "scribe",
         &response.model_used,

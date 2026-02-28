@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::{AgentRouter, GateContext};
 use crate::agent::{AgentContext, ContextFile};
+use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, Phase};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -14,6 +15,7 @@ pub async fn execute(
     status: &mut StatusFile,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let mut tasks = status.tasks()?;
 
     // Find the next todo task
@@ -24,7 +26,7 @@ pub async fn execute(
             // No todo tasks, check if all done
             if tasks.iter().all(|t| t.state == TaskState::Done) {
                 status_log::append(
-                    &orch_dir.join("status_log.md"),
+                    &log_path,
                     "impl",
                     "implementer",
                     "orch",
@@ -34,7 +36,7 @@ pub async fn execute(
                 return Ok(CycleDecision::NextPhase);
             }
             status_log::append(
-                &orch_dir.join("status_log.md"),
+                &log_path,
                 "impl",
                 "implementer",
                 "orch",
@@ -82,6 +84,15 @@ pub async fn execute(
     let gate_ctx = GateContext::default();
     let agent = router.select(Phase::Impl, &gate_ctx);
     let response = agent.respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        "impl",
+        "implementer",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
 
     // Mark task as done
     tasks[task_idx].state = TaskState::Done;
@@ -91,11 +102,14 @@ pub async fn execute(
     status.frontmatter.locks.active_task = None;
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "impl",
         "implementer",
         &response.model_used,
-        &format!("Completed task {}: {}", tasks[task_idx].id, tasks[task_idx].title),
+        &format!(
+            "Completed task {}: {}",
+            tasks[task_idx].id, tasks[task_idx].title
+        ),
     )
     .await?;
 

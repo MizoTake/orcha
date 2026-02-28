@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::core::agent_workspace;
 use crate::core::error::OrchaError;
 use crate::core::profile::ProfileName;
 use crate::core::status::StatusFile;
@@ -7,7 +8,7 @@ use crate::machine_config::MachineConfig;
 
 /// Execute `orcha profile <name>`: change the active profile.
 pub async fn execute(orch_dir: &Path, name: &str) -> anyhow::Result<()> {
-    let status_path = orch_dir.join("status.md");
+    let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
         return Err(OrchaError::NotInitialized {
             path: orch_dir.to_path_buf(),
@@ -49,6 +50,9 @@ pub async fn execute(orch_dir: &Path, name: &str) -> anyhow::Result<()> {
         machine_path.display(),
         profile
     );
+    if machine.execution.has_profile_strategy() {
+        println!("Note: execution.profile_strategy is active and may override this profile by cycle.");
+    }
 
     Ok(())
 }

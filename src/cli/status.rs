@@ -7,11 +7,12 @@ use crate::core::error::OrchaError;
 use crate::core::health::Health;
 use crate::core::status::StatusFile;
 use crate::core::task::TaskState;
+use crate::core::agent_workspace;
 use crate::machine_config::MachineConfig;
 
 /// Execute `orcha status`: display status.md dashboard.
 pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
-    let status_path = orch_dir.join("status.md");
+    let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
         return Err(OrchaError::NotInitialized {
             path: orch_dir.to_path_buf(),
@@ -20,15 +21,18 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     }
 
     let status = StatusFile::load(&status_path).await?;
-    let machine_profile = MachineConfig::load(orch_dir)
-        .ok()
-        .and_then(|m| m.execution.profile);
-    let active_profile = machine_profile.unwrap_or(status.frontmatter.profile);
+    let machine = MachineConfig::load(orch_dir).ok();
+    let active_profile = machine
+        .as_ref()
+        .map(|m| {
+            m.execution
+                .resolve_profile_name(status.frontmatter.cycle, status.frontmatter.profile)
+        })
+        .unwrap_or(status.frontmatter.profile);
     let tasks = status.tasks().unwrap_or_default();
 
     let health = Health::evaluate(
-        &tasks,
-        None, // No verify result available from just reading status
+        &tasks, None, // No verify result available from just reading status
         false,
     );
 
@@ -37,33 +41,30 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     println!();
 
     // Overview
-    println!(
-        "  Run ID:  {}",
-        status.frontmatter.run_id.dimmed()
-    );
-    println!(
-        "  Profile: {}",
-        active_profile.to_string().cyan()
-    );
-    if machine_profile.is_some() {
-        println!("  Profile source: {}", "orcha.yml execution.profile".dimmed());
+    println!("  Run ID:  {}", status.frontmatter.run_id.dimmed());
+    println!("  Profile: {}", active_profile.to_string().cyan());
+    if let Some(machine) = &machine {
+        if machine.execution.has_profile_strategy() {
+            println!(
+                "  Profile source: {}",
+                "orcha.yml execution.profile + profile_strategy".dimmed()
+            );
+        } else if machine.execution.profile.is_some() {
+            println!(
+                "  Profile source: {}",
+                "orcha.yml execution.profile".dimmed()
+            );
+        }
     }
-    println!(
-        "  Cycle:   {}",
-        status.frontmatter.cycle.to_string().bold()
-    );
+    println!("  Cycle:   {}", status.frontmatter.cycle.to_string().bold());
     println!(
         "  Phase:   {}",
         status.frontmatter.phase.to_string().yellow()
     );
-    println!(
-        "  Health:  {}",
-        format_health(health)
-    );
+    println!("  Health:  {}", format_health(health));
     println!(
         "  Budget:  {}/{}",
-        status.frontmatter.budget.paid_calls_used,
-        status.frontmatter.budget.paid_calls_limit
+        status.frontmatter.budget.paid_calls_used, status.frontmatter.budget.paid_calls_limit
     );
     println!();
 

@@ -3,16 +3,16 @@ use std::path::Path;
 use colored::Colorize;
 
 use crate::config::AppConfig;
+use crate::core::agent_workspace;
 use crate::core::error::OrchaError;
 use crate::core::gate;
 use crate::core::health::Health;
-use crate::core::profile::ProfileRules;
 use crate::core::status::StatusFile;
 use crate::machine_config::MachineConfig;
 
 /// Execute `orcha explain`: show current decision reasoning.
 pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
-    let status_path = orch_dir.join("status.md");
+    let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
         return Err(OrchaError::NotInitialized {
             path: orch_dir.to_path_buf(),
@@ -24,10 +24,11 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     let machine = MachineConfig::load(orch_dir)?;
     let active_profile = machine
         .execution
-        .profile
-        .unwrap_or(status.frontmatter.profile);
+        .resolve_profile_name(status.frontmatter.cycle, status.frontmatter.profile);
     let tasks = status.tasks().unwrap_or_default();
-    let profile_rules = ProfileRules::from_name(active_profile);
+    let profile_rules = machine
+        .execution
+        .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);
 
     println!("{}", "═══ Decision Reasoning ═══".bold());
     println!();
@@ -37,7 +38,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     println!("  Cycle:   {}", status.frontmatter.cycle);
     println!("  Phase:   {}", status.frontmatter.phase);
     println!("  Profile: {}", active_profile);
-    if machine.execution.profile.is_some() {
+    if machine.execution.has_profile_strategy() {
+        println!("  Profile source: orcha.yml execution.profile + profile_strategy");
+    } else if machine.execution.profile.is_some() {
         println!("  Profile source: orcha.yml execution.profile");
     } else {
         println!("  Profile source: status.md frontmatter");

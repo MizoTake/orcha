@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::agent::router::AgentRouter;
+use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, StopReason, MAX_CYCLES};
 use crate::core::profile::ProfileName;
 use crate::core::status::StatusFile;
@@ -15,6 +16,7 @@ pub async fn execute(
     status: &mut StatusFile,
     _router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let tasks = status.tasks()?;
     let machine = MachineConfig::load(orch_dir)?;
     let criteria_count = machine.execution.acceptance_criteria.len();
@@ -22,7 +24,7 @@ pub async fn execute(
     let verify_passed = status.content.contains("Overall: PASS");
     if completion_satisfied(&tasks, verify_passed, criteria_count) {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "decide",
             "planner",
             "orch",
@@ -45,7 +47,7 @@ pub async fn execute(
     let next_cycle = status.frontmatter.cycle + 1;
     if next_cycle >= MAX_CYCLES {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "decide",
             "planner",
             "orch",
@@ -55,11 +57,9 @@ pub async fn execute(
         return Ok(CycleDecision::Blocked(StopReason::MaxCyclesReached));
     }
 
-    if (verify_failed || has_blocked)
-        && status.frontmatter.profile == ProfileName::LocalOnly
-    {
+    if (verify_failed || has_blocked) && status.frontmatter.profile == ProfileName::LocalOnly {
         status_log::append(
-            &orch_dir.join("status_log.md"),
+            &log_path,
             "decide",
             "planner",
             "orch",
@@ -70,7 +70,7 @@ pub async fn execute(
     }
 
     status_log::append(
-        &orch_dir.join("status_log.md"),
+        &log_path,
         "decide",
         "planner",
         "orch",

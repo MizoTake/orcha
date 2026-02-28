@@ -1,0 +1,39 @@
+# Profile strategy patterns for execution.profile/profile_strategy
+# Copy one pattern into .orcha/orcha.yml -> execution.
+
+# Pattern A: Fixed profile (no switching)
+execution:
+  profile: "cheap_checkpoints"
+  profile_strategy:
+    alternating: []
+    every_n_cycles: []
+    mixins: []
+
+# Pattern B: Alternating every cycle
+execution:
+  profile: "cheap_checkpoints"
+  profile_strategy:
+    alternating: ["cheap_checkpoints", "quality_gate"]
+    every_n_cycles: []
+    mixins: []
+
+# Pattern C: Every N cycles override
+execution:
+  profile: "cheap_checkpoints"
+  profile_strategy:
+    alternating: []
+    every_n_cycles:
+      - interval: 3
+        profile: "unblock_first"
+        offset: 0
+    mixins: []
+
+# Pattern D: Mix rules from another profile
+execution:
+  profile: "cheap_checkpoints"
+  profile_strategy:
+    alternating: []
+    every_n_cycles: []
+    mixins:
+      - from: "quality_gate"
+        fields: ["review_agent", "security_gate"]

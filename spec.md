@@ -20,7 +20,7 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 
 `.orcha/` 配下を以下の責務で分離する。
 
-* Markdown: LLMが読む文脈・状態 (`goal.md`, `roles/*.md`, `status.md`, `status_log.md`)
+* Markdown: LLMが読む文脈・状態 (`goal.md`, `roles/*.md`, `agentworkspace/status.md`, `agentworkspace/status_log.md`)
 * YAML: オーケストレータが実行判断に使う設定 (`orcha.yml`)
 
 ### 2.2 Local-first
@@ -40,7 +40,7 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 他のAIツールは以下を読むことで状況を把握できる:
 
 * goal.md
-* status.md
+* agentworkspace/status.md
 * roles/
 
 ---
@@ -51,8 +51,9 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 .orcha/
   goal.md
   orcha.yml
-  status.md
-  status_log.md
+  agentworkspace/
+    status.md
+    status_log.md
 
   roles/
     planner.md
@@ -100,6 +101,9 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 * `agents.local_llm.cli.ensure_no_permission_flags`
 * `agents.{anthropic,gemini,openai}.api_key_env`, `model`
 * `execution.profile` (`local_only` / `cheap_checkpoints` / `quality_gate` / `unblock_first`)
+* `execution.profile_strategy.alternating`
+* `execution.profile_strategy.every_n_cycles`
+* `execution.profile_strategy.mixins` (`fields`: `default_agent` / `review_agent` / `escalation` / `security_gate` / `size_gate`)
 * `execution.acceptance_criteria`
 * `execution.verification.commands`
 
@@ -107,6 +111,12 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 
 * `command=codex` では `--ask-for-approval never` を自動付与（未指定時）
 * `command=claude` 系では `--dangerously-skip-permissions` を自動付与（未指定時）
+
+プロファイル戦略例:
+
+* alternating: cycleごとに `cheap_checkpoints` と `quality_gate` を交互適用
+* every_n_cycles: 3サイクルごとに `unblock_first` を適用
+* mixins: `quality_gate` の `review_agent` と `security_gate` だけを合成
 
 ---
 
@@ -127,11 +137,13 @@ paid_review_required: yes/no
 reason
 ```
 
+エージェント応答は `.orcha/agentworkspace/` にMarkdownで保存される。
+
 ---
 
 ## 6. Status Model (Single Source of Truth)
 
-### status.md
+### agentworkspace/status.md
 
 #### Frontmatter (machine readable)
 
@@ -176,7 +188,7 @@ State:
 
 ## 7. Status Log
 
-status_log.md は追記専用:
+agentworkspace/status_log.md は追記専用:
 
 ```
 time [phase] role(agent): message
@@ -198,7 +210,7 @@ time [phase] role(agent): message
 
 ルール:
 
-* 外部ツールは status.md を直接編集しない
+* 外部ツールは agentworkspace/status.md を直接編集しない
 * inbox に追記する
 
 ---
@@ -308,12 +320,12 @@ pub async fn run(commands: &[String]) -> Result<VerifyResult>;
 
 ### orcha status
 
-status.md をダッシュボード表示（カラー出力・タスクテーブル付き）
+agentworkspace/status.md をダッシュボード表示（カラー出力・タスクテーブル付き）
 
 ### orcha profile \<name\>
 
 profile変更 (local_only / cheap_checkpoints / quality_gate / unblock_first)  
-`status.md` と `orcha.yml.execution.profile` の両方を更新する
+`agentworkspace/status.md` と `orcha.yml.execution.profile` の両方を更新する
 
 ### orcha explain
 
