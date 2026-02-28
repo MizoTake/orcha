@@ -1,0 +1,124 @@
+use std::path::Path;
+
+use colored::Colorize;
+
+use crate::config::AppConfig;
+use crate::core::error::OrchaError;
+use crate::core::gate;
+use crate::core::health::Health;
+use crate::core::profile::ProfileRules;
+use crate::core::status::StatusFile;
+
+/// Execute `orcha explain`: show current decision reasoning.
+pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
+    let status_path = orch_dir.join("status.md");
+    if !status_path.exists() {
+        return Err(OrchaError::NotInitialized {
+            path: orch_dir.to_path_buf(),
+        }
+        .into());
+    }
+
+    let status = StatusFile::load(&status_path).await?;
+    let tasks = status.tasks().unwrap_or_default();
+    let profile_rules = ProfileRules::from_name(status.frontmatter.profile);
+
+    println!("{}", "═══ Decision Reasoning ═══".bold());
+    println!();
+
+    // Current state
+    println!("{}", "Current State:".bold());
+    println!("  Cycle:   {}", status.frontmatter.cycle);
+    println!("  Phase:   {}", status.frontmatter.phase);
+    println!("  Profile: {}", status.frontmatter.profile);
+    println!();
+
+    // Profile rules
+    println!("{}", "Active Profile Rules:".bold());
+    println!("  Default agent:     {}", profile_rules.default_agent);
+    if let Some(ref ra) = profile_rules.review_agent {
+        println!("  Review agent:      {}", ra);
+    }
+    if let Some(ref esc) = profile_rules.escalation {
+        println!(
+            "  Escalation:        after {} failures -> {}",
+            esc.failure_threshold, esc.escalate_to
+        );
+        if let Some(ref cont) = esc.continued_failure_to {
+            println!("  Continued failure: -> {}", cont);
+        }
+    } else {
+        println!("  Escalation:        disabled");
+    }
+    println!(
+        "  Security gate:     {}",
+        if profile_rules.security_gate_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "  Size gate:         {}",
+        if profile_rules.size_gate_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!();
+
+    // Health
+    let health = Health::evaluate(&tasks, None, false);
+    println!("{}", "Health:".bold());
+    println!("  {}", health);
+    println!();
+
+    // Available agents
+    println!("{}", "Available Agents:".bold());
+    println!("  local_llm: always available");
+    println!(
+        "  claude:    {}",
+        if config.has_anthropic() {
+            "available (API key set)".green().to_string()
+        } else {
+            "not configured".red().to_string()
+        }
+    );
+    println!(
+        "  gemini:    {}",
+        if config.has_gemini() {
+            "available (API key set)".green().to_string()
+        } else {
+            "not configured".red().to_string()
+        }
+    );
+    println!(
+        "  codex:     {}",
+        if config.has_openai() {
+            "available (API key set)".green().to_string()
+        } else {
+            "not configured".red().to_string()
+        }
+    );
+    println!();
+
+    // Gate evaluation (current state)
+    println!("{}", "Gate Status:".bold());
+    let size_gate = gate::evaluate_size_gate(0);
+    println!("  Size gate:     {:?}", size_gate);
+    let security_gate = gate::evaluate_security_gate(None, &[]);
+    println!("  Security gate: {:?}", security_gate);
+    let unblock_gate = gate::evaluate_unblock_gate(0, &profile_rules);
+    println!("  Unblock gate:  {:?}", unblock_gate);
+    println!();
+
+    // Budget
+    println!("{}", "Budget:".bold());
+    println!(
+        "  Paid calls: {}/{}",
+        status.frontmatter.budget.paid_calls_used, status.frontmatter.budget.paid_calls_limit
+    );
+
+    Ok(())
+}
