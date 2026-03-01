@@ -92,6 +92,10 @@ fn is_claude_code_command(command_name: &str) -> bool {
     command_name == "claude" || command_name == "claude-code" || command_name == "claudecode"
 }
 
+fn is_opencode_command(command_name: &str) -> bool {
+    command_name == "opencode" || command_name == "opencode-cli"
+}
+
 fn ensure_codex_no_permission_args(args: &mut Vec<String>) {
     let has_dangerous = args.iter().any(|arg| {
         arg.eq_ignore_ascii_case("--dangerously-bypass-approvals-and-sandbox")
@@ -151,6 +155,12 @@ impl Agent for LocalCliAgent {
         if self.prompt_via_stdin {
             cmd.stdin(Stdio::piped());
         } else {
+            // opencode run uses positional message parsing; prompts beginning with '-' can be
+            // misread as options unless we terminate option parsing explicitly.
+            let command_name = normalize_command_name(&self.command);
+            if is_opencode_command(&command_name) {
+                cmd.arg("--");
+            }
             cmd.arg(&prompt);
         }
 
@@ -177,11 +187,17 @@ impl Agent for LocalCliAgent {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else {
+                stdout
+            };
             anyhow::bail!(
                 "Local CLI '{}' failed with exit code {:?}: {}",
                 self.command,
                 output.status.code(),
-                stderr
+                detail
             );
         }
 
@@ -345,6 +361,13 @@ mod tests {
         let agent = LocalCliAgent::new(&cfg).expect("agent should build");
         assert!(agent.model.is_empty());
         assert_eq!(agent.model_arg.as_deref(), Some("--model"));
+    }
+
+    #[test]
+    fn recognizes_opencode_command_name_variants() {
+        assert!(super::is_opencode_command("opencode"));
+        assert!(super::is_opencode_command("opencode-cli"));
+        assert!(!super::is_opencode_command("codex"));
     }
 
     #[cfg(windows)]
