@@ -130,7 +130,7 @@ agents:
   - 目的: 検証（`cargo check` + `cargo test --lib`）
   - 例: `./scripts/test.ps1` / `./scripts/test.ps1 -SkipCheck`
 - `scripts/run.ps1`
-  - 目的: CLIラッパー（`--orch-dir` を含めて実行）
+  - 目的: CLIラッパー（`--orcha-dir` を含めて実行）
   - 例:
     - `./scripts/run.ps1 init`
     - `./scripts/run.ps1 status -OrchDir target/demo`

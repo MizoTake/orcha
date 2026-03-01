@@ -376,7 +376,7 @@ profile変更 (local_only / cheap_checkpoints / quality_gate / unblock_first / o
 
 共通オプション:
 
-* `--orch-dir <PATH>` — .orcha ディレクトリのパス (default: `.orcha`)
+* `--orcha-dir <PATH>` — .orcha ディレクトリのパス (default: `.orcha`)
 * `-v, --verbose` — 詳細ログ出力
 
 ---

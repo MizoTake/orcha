@@ -24,7 +24,7 @@ The design specification lives in `spec.md`.
 
 Six top-level modules (`src/lib.rs`):
 
-- **`cli/`** — clap-derive command handlers (`init`, `run`, `status`, `profile`, `explain`). The global `--orch-dir` flag defaults to `.orch`.
+- **`cli/`** — clap-derive command handlers (`init`, `run`, `status`, `profile`, `explain`). The global `--orcha-dir` flag defaults to `.orch`.
 - **`core/`** — Domain logic: `StatusFile` (YAML frontmatter + markdown), `Task` (table parsing/rendering), `Phase`/`CycleDecision` cycle engine, `Profile`/`ProfileRules`, three gate types (security/unblock/size), `HealthStatus`, append-only logging, handoff inbox/outbox, and `OrchaError` (thiserror).
 - **`agent/`** — `Agent` trait (`respond(&self, &AgentContext) -> AgentResponse`) with four backends in `backend/`: `local_llm` (OpenAI-compatible), `anthropic` (Claude), `gemini`, `codex`. The `router` selects which agent to use based on phase, profile, and gate evaluation. The `verifier` runs shell commands from `goal.md`.
 - **`phase/`** — Seven phase implementations: briefing → plan → impl → review → fix → verify → decide. Each phase reads context, calls an agent (or runs shell commands for verify), and produces output that updates status.

@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn cli_accepts_custom_orch_dir() {
-        let cli = Cli::parse_from(["orcha", "--orch-dir", ".orch", "run"]);
+        let cli = Cli::parse_from(["orcha", "--orcha-dir", ".orch", "run"]);
         assert!(matches!(
             cli.command,
             Command::Run {
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn cli_accepts_custom_orch_dir_after_subcommand() {
-        let cli = Cli::parse_from(["orcha", "status", "--orch-dir", ".orch"]);
+        let cli = Cli::parse_from(["orcha", "status", "--orcha-dir", ".orch"]);
         assert!(matches!(cli.command, Command::Status));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
     }

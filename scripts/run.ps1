@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$cliArgs = @("--orch-dir", $OrchDir, $Command)
+$cliArgs = @("--orcha-dir", $OrchDir, $Command)
 
 if ($Command -eq "profile") {
     if ([string]::IsNullOrWhiteSpace($ProfileName)) {

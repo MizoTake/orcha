@@ -21,7 +21,7 @@ Unit tests are in-file (`#[cfg(test)]`) across modules; there is no separate `te
 - `cargo test --lib`: run library unit tests (currently 38 tests).
 - `cargo test <name>`: run a specific test.
 - `cargo run -- --help`: inspect CLI usage.
-- `cargo run -- init --orch-dir .orcha`: scaffold workflow files.
+- `cargo run -- init --orcha-dir .orcha`: scaffold workflow files.
 
 ## Coding Style & Naming Conventions
 - Follow Rust defaults: 4-space indentation, `snake_case` for functions/modules, `CamelCase` for types/enums.
