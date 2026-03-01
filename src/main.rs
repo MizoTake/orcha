@@ -57,9 +57,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init => {
             orcha::cli::init::execute(&cli.orch_dir).await?;
         }
-        Command::Run => {
+        Command::Run { allow_concurrent } => {
             let config = orcha::config::AppConfig::from_orch_dir(&cli.orch_dir)?;
-            orcha::cli::run::execute(&cli.orch_dir, &config).await?;
+            orcha::cli::run::execute(&cli.orch_dir, &config, allow_concurrent).await?;
         }
         Command::Status => {
             orcha::cli::status::execute(&cli.orch_dir).await?;

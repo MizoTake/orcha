@@ -29,7 +29,11 @@ pub enum Command {
     Init,
 
     /// Execute cycles until goal is done or a stop condition is reached
-    Run,
+    Run {
+        /// Allow multiple orcha run processes on the same .orcha directory.
+        #[arg(long, default_value_t = false)]
+        allow_concurrent: bool,
+    },
 
     /// Display current status
     Status,
@@ -63,8 +67,24 @@ mod tests {
     #[test]
     fn cli_accepts_custom_orch_dir() {
         let cli = Cli::parse_from(["orcha", "--orch-dir", ".orch", "run"]);
-        assert!(matches!(cli.command, Command::Run));
+        assert!(matches!(
+            cli.command,
+            Command::Run {
+                allow_concurrent: false
+            }
+        ));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
+    }
+
+    #[test]
+    fn cli_accepts_allow_concurrent_flag_for_run() {
+        let cli = Cli::parse_from(["orcha", "run", "--allow-concurrent"]);
+        assert!(matches!(
+            cli.command,
+            Command::Run {
+                allow_concurrent: true
+            }
+        ));
     }
 
     #[test]

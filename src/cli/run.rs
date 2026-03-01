@@ -14,7 +14,11 @@ use crate::machine_config::MachineConfig;
 use crate::phase;
 
 /// Execute `orcha run`: continue cycles until goal completion or stop condition.
-pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
+pub async fn execute(
+    orch_dir: &Path,
+    config: &AppConfig,
+    allow_concurrent: bool,
+) -> anyhow::Result<()> {
     let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
         return Err(OrchaError::NotInitialized {
@@ -35,18 +39,19 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
         .into());
     }
 
-    // Check writer lock
-    if let Some(ref writer) = status.frontmatter.locks.writer {
-        return Err(OrchaError::LockConflict {
-            holder: writer.clone(),
+    // Check writer lock and acquire lock unless concurrent mode is requested.
+    if !allow_concurrent {
+        if let Some(ref writer) = status.frontmatter.locks.writer {
+            return Err(OrchaError::LockConflict {
+                holder: writer.clone(),
+            }
+            .into());
         }
-        .into());
-    }
 
-    // Acquire lock
-    let lock_id = format!("orch-{}", std::process::id());
-    status.frontmatter.locks.writer = Some(lock_id.clone());
-    status.save(&status_path).await?;
+        let lock_id = format!("orch-{}", std::process::id());
+        status.frontmatter.locks.writer = Some(lock_id);
+        status.save(&status_path).await?;
+    }
 
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
@@ -216,7 +221,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     }
 
     // Release lock and save final state.
-    status.frontmatter.locks.writer = None;
+    if !allow_concurrent {
+        status.frontmatter.locks.writer = None;
+    }
     status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
     status.save(&status_path).await?;
 
