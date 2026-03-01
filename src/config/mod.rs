@@ -3,13 +3,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::core::error::OrchaError;
-use crate::machine_config::{LocalLlmCliConfig, LocalLlmMode, MachineConfig};
+use crate::machine_config::{LocalLlmCliConfig, MachineConfig, ProviderMode};
 
 /// Application configuration resolved from environment variables and .env file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     // Local LLM (OpenAI-compatible)
-    pub local_llm_mode: LocalLlmMode,
+    pub local_llm_mode: ProviderMode,
     pub local_llm_endpoint: String,
     pub local_llm_model: String,
     pub local_llm_cli: LocalLlmCliConfig,
@@ -17,14 +17,20 @@ pub struct AppConfig {
     // Anthropic (Claude)
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: String,
+    pub anthropic_mode: ProviderMode,
+    pub anthropic_cli: LocalLlmCliConfig,
 
     // Google Gemini
     pub gemini_api_key: Option<String>,
     pub gemini_model: String,
+    pub gemini_mode: ProviderMode,
+    pub gemini_cli: LocalLlmCliConfig,
 
     // OpenAI / Codex
     pub openai_api_key: Option<String>,
     pub codex_model: String,
+    pub openai_mode: ProviderMode,
+    pub openai_cli: LocalLlmCliConfig,
 }
 
 impl AppConfig {
@@ -48,13 +54,19 @@ impl AppConfig {
             local_llm_cli,
 
             anthropic_api_key: env_api_key(&machine.agents.anthropic.api_key_env),
-            anthropic_model: machine.agents.anthropic.model,
+            anthropic_model: machine.agents.anthropic.model.clone(),
+            anthropic_mode: machine.agents.anthropic.mode.clone(),
+            anthropic_cli: machine.agents.anthropic.cli.clone(),
 
             gemini_api_key: env_api_key(&machine.agents.gemini.api_key_env),
-            gemini_model: machine.agents.gemini.model,
+            gemini_model: machine.agents.gemini.model.clone(),
+            gemini_mode: machine.agents.gemini.mode.clone(),
+            gemini_cli: machine.agents.gemini.cli.clone(),
 
             openai_api_key: env_api_key(&machine.agents.openai.api_key_env),
-            codex_model: machine.agents.openai.model,
+            codex_model: machine.agents.openai.model.clone(),
+            openai_mode: machine.agents.openai.mode.clone(),
+            openai_cli: machine.agents.openai.cli.clone(),
         })
     }
 
@@ -63,7 +75,7 @@ impl AppConfig {
     /// Legacy helper; prefers fixed env var names.
     pub fn from_env() -> Self {
         Self {
-            local_llm_mode: LocalLlmMode::Http,
+            local_llm_mode: ProviderMode::Http,
             local_llm_endpoint: std::env::var("LOCAL_LLM_ENDPOINT")
                 .unwrap_or_else(|_| "http://localhost:11434/v1".to_string()),
             local_llm_model: std::env::var("LOCAL_LLM_MODEL")
@@ -73,28 +85,38 @@ impl AppConfig {
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             anthropic_model: std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string()),
+            anthropic_mode: ProviderMode::Http,
+            anthropic_cli: LocalLlmCliConfig::default(),
 
             gemini_api_key: std::env::var("GEMINI_API_KEY").ok(),
             gemini_model: std::env::var("GEMINI_MODEL")
                 .unwrap_or_else(|_| "gemini-2.0-flash".to_string()),
+            gemini_mode: ProviderMode::Http,
+            gemini_cli: LocalLlmCliConfig::default(),
 
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             codex_model: std::env::var("CODEX_MODEL").unwrap_or_else(|_| "gpt-4.1".to_string()),
+            openai_mode: ProviderMode::Http,
+            openai_cli: LocalLlmCliConfig::default(),
         }
     }
 
     pub fn has_anthropic(&self) -> bool {
-        self.anthropic_api_key
-            .as_ref()
-            .is_some_and(|k| !k.is_empty())
+        matches!(self.anthropic_mode, ProviderMode::Cli)
+            || self
+                .anthropic_api_key
+                .as_ref()
+                .is_some_and(|k| !k.is_empty())
     }
 
     pub fn has_gemini(&self) -> bool {
-        self.gemini_api_key.as_ref().is_some_and(|k| !k.is_empty())
+        matches!(self.gemini_mode, ProviderMode::Cli)
+            || self.gemini_api_key.as_ref().is_some_and(|k| !k.is_empty())
     }
 
     pub fn has_openai(&self) -> bool {
-        self.openai_api_key.as_ref().is_some_and(|k| !k.is_empty())
+        matches!(self.openai_mode, ProviderMode::Cli)
+            || self.openai_api_key.as_ref().is_some_and(|k| !k.is_empty())
     }
 }
 
@@ -118,8 +140,8 @@ fn resolve_local_llm_model(machine: &MachineConfig) -> String {
     }
 
     match machine.agents.local_llm.mode {
-        LocalLlmMode::Http => "llama3.2".to_string(),
-        LocalLlmMode::Cli => String::new(),
+        ProviderMode::Http => "llama3.2".to_string(),
+        ProviderMode::Cli => String::new(),
     }
 }
 

@@ -40,13 +40,8 @@ pub struct LocalLlmConfig {
     pub cli: LocalLlmCliConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LocalLlmMode {
-    #[default]
-    Http,
-    Cli,
-}
+/// Backwards-compatible alias; `LocalLlmConfig.mode` now uses the shared `ProviderMode`.
+pub type LocalLlmMode = ProviderMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalLlmCliConfig {
@@ -68,6 +63,18 @@ pub struct ProviderConfig {
     pub api_key_env: String,
     #[serde(default)]
     pub model: String,
+    #[serde(default)]
+    pub mode: ProviderMode,
+    #[serde(default)]
+    pub cli: LocalLlmCliConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderMode {
+    #[default]
+    Http,
+    Cli,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,14 +241,20 @@ impl Default for AgentsConfig {
             anthropic: ProviderConfig {
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 model: "claude-sonnet-4-20250514".to_string(),
+                mode: ProviderMode::Http,
+                cli: LocalLlmCliConfig::default(),
             },
             gemini: ProviderConfig {
                 api_key_env: "GEMINI_API_KEY".to_string(),
                 model: "gemini-2.0-flash".to_string(),
+                mode: ProviderMode::Http,
+                cli: LocalLlmCliConfig::default(),
             },
             openai: ProviderConfig {
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 model: "gpt-4.1".to_string(),
+                mode: ProviderMode::Http,
+                cli: LocalLlmCliConfig::default(),
             },
         }
     }
@@ -250,7 +263,7 @@ impl Default for AgentsConfig {
 impl Default for LocalLlmConfig {
     fn default() -> Self {
         Self {
-            mode: LocalLlmMode::Http,
+            mode: ProviderMode::Http,
             endpoint: default_local_llm_endpoint(),
             model: None,
             cli: LocalLlmCliConfig::default(),
@@ -275,6 +288,8 @@ impl Default for ProviderConfig {
         Self {
             api_key_env: String::new(),
             model: String::new(),
+            mode: ProviderMode::Http,
+            cli: LocalLlmCliConfig::default(),
         }
     }
 }
@@ -316,7 +331,7 @@ fn default_ensure_no_permission_flags() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionConfig, LocalLlmMode, MachineConfig, ProfileRuleField};
+    use super::{ExecutionConfig, MachineConfig, ProfileRuleField, ProviderMode};
     use crate::core::profile::{AgentPreference, ProfileName};
 
     #[test]
@@ -340,7 +355,7 @@ execution:
         assert_eq!(cfg.execution.acceptance_criteria.len(), 1);
         assert_eq!(cfg.execution.verification.commands, vec!["cargo test"]);
         assert_eq!(cfg.agents.local_llm.model.as_deref(), Some("llama3.2"));
-        assert_eq!(cfg.agents.local_llm.mode, LocalLlmMode::Http);
+        assert_eq!(cfg.agents.local_llm.mode, ProviderMode::Http);
     }
 
     #[test]
@@ -369,7 +384,7 @@ execution:
 "#;
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(cfg.agents.local_llm.mode, LocalLlmMode::Cli);
+        assert_eq!(cfg.agents.local_llm.mode, ProviderMode::Cli);
         assert_eq!(cfg.agents.local_llm.cli.command, "opencode");
         assert_eq!(
             cfg.agents.local_llm.cli.model_arg.as_deref(),
@@ -396,6 +411,81 @@ execution:
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
         assert!(!cfg.agents.local_llm.cli.ensure_no_permission_flags);
+    }
+
+    #[test]
+    fn parse_cli_mode_for_anthropic_provider() {
+        let yml = r#"
+version: 1
+agents:
+  anthropic:
+    mode: cli
+    model: claude-sonnet-4-20250514
+    cli:
+      command: claude
+      args: ["--dangerously-skip-permissions"]
+      prompt_via_stdin: false
+      model_arg: "--model"
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.agents.anthropic.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.anthropic.cli.command, "claude");
+        assert!(!cfg.agents.anthropic.cli.prompt_via_stdin);
+        assert_eq!(
+            cfg.agents.anthropic.cli.model_arg.as_deref(),
+            Some("--model")
+        );
+        assert_eq!(cfg.agents.anthropic.model, "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn parse_cli_mode_for_openai_provider() {
+        let yml = r#"
+version: 1
+agents:
+  openai:
+    mode: cli
+    model: codex
+    cli:
+      command: codex
+      args: ["exec", "--sandbox", "danger-full-access"]
+      prompt_via_stdin: false
+      ensure_no_permission_flags: false
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.agents.openai.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.openai.cli.command, "codex");
+        assert!(!cfg.agents.openai.cli.ensure_no_permission_flags);
+        assert_eq!(cfg.agents.openai.model, "codex");
+    }
+
+    #[test]
+    fn provider_defaults_to_http_mode() {
+        let yml = r#"
+version: 1
+agents:
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+    model: claude-sonnet-4-20250514
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.agents.anthropic.mode, ProviderMode::Http);
+        assert!(cfg.agents.anthropic.cli.command.is_empty());
     }
 
     #[test]

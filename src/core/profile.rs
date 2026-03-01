@@ -9,6 +9,7 @@ pub enum ProfileName {
     CheapCheckpoints,
     QualityGate,
     UnblockFirst,
+    CodexReview,
 }
 
 impl ProfileName {
@@ -18,6 +19,7 @@ impl ProfileName {
             "cheap_checkpoints" => Some(ProfileName::CheapCheckpoints),
             "quality_gate" => Some(ProfileName::QualityGate),
             "unblock_first" => Some(ProfileName::UnblockFirst),
+            "codex_review" => Some(ProfileName::CodexReview),
             _ => None,
         }
     }
@@ -28,6 +30,7 @@ impl ProfileName {
             ProfileName::CheapCheckpoints,
             ProfileName::QualityGate,
             ProfileName::UnblockFirst,
+            ProfileName::CodexReview,
         ]
     }
 }
@@ -39,6 +42,7 @@ impl fmt::Display for ProfileName {
             ProfileName::CheapCheckpoints => write!(f, "cheap_checkpoints"),
             ProfileName::QualityGate => write!(f, "quality_gate"),
             ProfileName::UnblockFirst => write!(f, "unblock_first"),
+            ProfileName::CodexReview => write!(f, "codex_review"),
         }
     }
 }
@@ -123,6 +127,18 @@ impl ProfileRules {
                     failure_threshold: 1,
                     escalate_to: AgentPreference::Codex,
                     continued_failure_to: Some(AgentPreference::Claude),
+                }),
+                security_gate_enabled: true,
+                size_gate_enabled: true,
+            },
+            ProfileName::CodexReview => ProfileRules {
+                name,
+                default_agent: AgentPreference::LocalLlm,
+                review_agent: Some(AgentPreference::Codex),
+                escalation: Some(EscalationRule {
+                    failure_threshold: 2,
+                    escalate_to: AgentPreference::Claude,
+                    continued_failure_to: None,
                 }),
                 security_gate_enabled: true,
                 size_gate_enabled: true,

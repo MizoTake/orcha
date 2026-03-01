@@ -7,6 +7,7 @@ use tokio::process::Command;
 
 use crate::agent::{Agent, AgentContext, AgentKind, AgentResponse};
 use crate::config::AppConfig;
+use crate::machine_config::LocalLlmCliConfig;
 
 /// Local CLI agent that directly invokes an external command.
 pub struct LocalCliAgent {
@@ -15,23 +16,28 @@ pub struct LocalCliAgent {
     model: String,
     model_arg: Option<String>,
     prompt_via_stdin: bool,
+    agent_kind: AgentKind,
 }
 
 impl LocalCliAgent {
     pub fn new(config: &AppConfig) -> anyhow::Result<Self> {
-        let cli = &config.local_llm_cli;
+        Self::from_cli_config(&config.local_llm_cli, &config.local_llm_model, AgentKind::LocalLlm)
+    }
+
+    pub fn from_cli_config(cli: &LocalLlmCliConfig, model: &str, kind: AgentKind) -> anyhow::Result<Self> {
         if cli.command.trim().is_empty() {
             anyhow::bail!(
-                "agents.local_llm.mode=cli requires agents.local_llm.cli.command in orcha.yml"
+                "CLI mode requires command in CLI config"
             );
         }
 
         Ok(Self {
             command: cli.command.clone(),
             args: with_no_permission_flags(&cli.command, &cli.args, cli.ensure_no_permission_flags),
-            model: config.local_llm_model.clone(),
+            model: model.to_string(),
             model_arg: cli.model_arg.clone(),
             prompt_via_stdin: cli.prompt_via_stdin,
+            agent_kind: kind,
         })
     }
 
@@ -193,15 +199,15 @@ impl Agent for LocalCliAgent {
     }
 
     fn kind(&self) -> AgentKind {
-        AgentKind::LocalLlm
+        self.agent_kind
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::{Agent, AgentContext, ContextFile};
+    use crate::agent::{Agent, AgentContext, AgentKind, ContextFile};
     use crate::config::AppConfig;
-    use crate::machine_config::{LocalLlmCliConfig, LocalLlmMode};
+    use crate::machine_config::{LocalLlmCliConfig, ProviderMode};
 
     use super::LocalCliAgent;
 
@@ -215,7 +221,7 @@ mod tests {
         ensure_no_permission: bool,
     ) -> AppConfig {
         AppConfig {
-            local_llm_mode: LocalLlmMode::Cli,
+            local_llm_mode: ProviderMode::Cli,
             local_llm_endpoint: "http://localhost:11434/v1".to_string(),
             local_llm_model: "llama3.2".to_string(),
             local_llm_cli: LocalLlmCliConfig {
@@ -227,10 +233,16 @@ mod tests {
             },
             anthropic_api_key: None,
             anthropic_model: "claude-sonnet-4-20250514".to_string(),
+            anthropic_mode: ProviderMode::Http,
+            anthropic_cli: LocalLlmCliConfig::default(),
             gemini_api_key: None,
             gemini_model: "gemini-2.0-flash".to_string(),
+            gemini_mode: ProviderMode::Http,
+            gemini_cli: LocalLlmCliConfig::default(),
             openai_api_key: None,
             codex_model: "gpt-4.1".to_string(),
+            openai_mode: ProviderMode::Http,
+            openai_cli: LocalLlmCliConfig::default(),
         }
     }
 
@@ -246,11 +258,20 @@ mod tests {
 
     #[test]
     fn new_fails_when_command_is_empty() {
-        let cfg = sample_config("");
-        let err = LocalCliAgent::new(&cfg).err().expect("expected error");
+        let err = LocalCliAgent::from_cli_config(
+            &LocalLlmCliConfig {
+                command: "".to_string(),
+                args: vec![],
+                prompt_via_stdin: false,
+                model_arg: None,
+                ensure_no_permission_flags: true,
+            },
+            "llama3.2",
+            AgentKind::LocalLlm,
+        ).err().expect("expected error");
         assert!(err
             .to_string()
-            .contains("requires agents.local_llm.cli.command"));
+            .contains("requires command"));
     }
 
     #[test]

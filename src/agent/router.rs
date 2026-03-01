@@ -10,7 +10,7 @@ use crate::config::AppConfig;
 use crate::core::cycle::Phase;
 use crate::core::gate::{self, GateDecision};
 use crate::core::profile::{AgentPreference, ProfileRules};
-use crate::machine_config::LocalLlmMode;
+use crate::machine_config::ProviderMode;
 
 /// Routes agent requests to the appropriate backend based on profile and gates.
 pub struct AgentRouter {
@@ -43,25 +43,65 @@ impl AgentRouter {
 
         // Local LLM backend selection
         let local_agent: Box<dyn Agent> = match config.local_llm_mode {
-            LocalLlmMode::Http => Box::new(LocalLlmAgent::new(config)),
-            LocalLlmMode::Cli => Box::new(LocalCliAgent::new(config)?),
+            ProviderMode::Http => Box::new(LocalLlmAgent::new(config)),
+            ProviderMode::Cli => Box::new(LocalCliAgent::new(config)?),
         };
         agents.insert(AgentKind::LocalLlm, local_agent);
 
-        // Optionally add paid agents
-        if config.has_anthropic() {
-            if let Ok(agent) = AnthropicAgent::new(config) {
+        // Claude (Anthropic)
+        match config.anthropic_mode {
+            ProviderMode::Cli => {
+                let agent = LocalCliAgent::from_cli_config(
+                    &config.anthropic_cli,
+                    &config.anthropic_model,
+                    AgentKind::Claude,
+                )?;
                 agents.insert(AgentKind::Claude, Box::new(agent));
             }
-        }
-        if config.has_gemini() {
-            if let Ok(agent) = GeminiAgent::new(config) {
-                agents.insert(AgentKind::Gemini, Box::new(agent));
+            ProviderMode::Http => {
+                if config.has_anthropic() {
+                    if let Ok(agent) = AnthropicAgent::new(config) {
+                        agents.insert(AgentKind::Claude, Box::new(agent));
+                    }
+                }
             }
         }
-        if config.has_openai() {
-            if let Ok(agent) = CodexAgent::new(config) {
+
+        // Gemini
+        match config.gemini_mode {
+            ProviderMode::Cli => {
+                let agent = LocalCliAgent::from_cli_config(
+                    &config.gemini_cli,
+                    &config.gemini_model,
+                    AgentKind::Gemini,
+                )?;
+                agents.insert(AgentKind::Gemini, Box::new(agent));
+            }
+            ProviderMode::Http => {
+                if config.has_gemini() {
+                    if let Ok(agent) = GeminiAgent::new(config) {
+                        agents.insert(AgentKind::Gemini, Box::new(agent));
+                    }
+                }
+            }
+        }
+
+        // Codex (OpenAI)
+        match config.openai_mode {
+            ProviderMode::Cli => {
+                let agent = LocalCliAgent::from_cli_config(
+                    &config.openai_cli,
+                    &config.codex_model,
+                    AgentKind::Codex,
+                )?;
                 agents.insert(AgentKind::Codex, Box::new(agent));
+            }
+            ProviderMode::Http => {
+                if config.has_openai() {
+                    if let Ok(agent) = CodexAgent::new(config) {
+                        agents.insert(AgentKind::Codex, Box::new(agent));
+                    }
+                }
             }
         }
 
