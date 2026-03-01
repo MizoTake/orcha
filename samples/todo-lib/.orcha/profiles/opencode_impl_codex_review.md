@@ -1,4 +1,4 @@
-# Profile: opencode_codex
+# Profile: opencode_impl_codex_review
 
 ## Description
 

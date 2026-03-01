@@ -3,7 +3,7 @@ version: 1
 agents:
   local_llm:
     mode: "cli"
-    model: "openai/gpt-4.1"
+    model: "qwen/qwen3-30b-a3b-2507"
     cli:
       command: "opencode-cli"
       args: ["run"]
@@ -37,9 +37,20 @@ agents:
       ensure_no_permission_flags: true
 
 execution:
-  profile: "opencode_claude"
+  profile: "opencode_impl_no_review"
   profile_strategy:
-    alternating: []
+    alternating:
+      - "opencode_impl_no_review"
+      - "opencode_impl_no_review"
+      - "opencode_impl_codex_review"
+      - "opencode_impl_no_review"
+      - "opencode_impl_claude_review"
+      - "opencode_impl_no_review"
+      - "opencode_impl_no_review"
+      - "codex_impl_opencode_review"
+      - "opencode_impl_no_review"
+      - "claude_impl_opencode_review"
+      - "opencode_impl_no_review"
     every_n_cycles: []
     mixins: []
   acceptance_criteria:

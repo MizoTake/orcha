@@ -93,16 +93,32 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
             template::profile_unblock_first_md().to_string(),
         ),
         (
-            orch_dir.join("profiles").join("opencode_only.md"),
-            template::profile_opencode_only_md().to_string(),
+            orch_dir.join("profiles").join("opencode_impl_no_review.md"),
+            template::profile_opencode_impl_no_review_md().to_string(),
         ),
         (
-            orch_dir.join("profiles").join("opencode_claude.md"),
-            template::profile_opencode_claude_md().to_string(),
+            orch_dir
+                .join("profiles")
+                .join("opencode_impl_claude_review.md"),
+            template::profile_opencode_impl_claude_review_md().to_string(),
         ),
         (
-            orch_dir.join("profiles").join("opencode_codex.md"),
-            template::profile_opencode_codex_md().to_string(),
+            orch_dir
+                .join("profiles")
+                .join("opencode_impl_codex_review.md"),
+            template::profile_opencode_impl_codex_review_md().to_string(),
+        ),
+        (
+            orch_dir
+                .join("profiles")
+                .join("claude_impl_opencode_review.md"),
+            template::profile_claude_impl_opencode_review_md().to_string(),
+        ),
+        (
+            orch_dir
+                .join("profiles")
+                .join("codex_impl_opencode_review.md"),
+            template::profile_codex_impl_opencode_review_md().to_string(),
         ),
         (
             orch_dir.join("roles").join("samples").join("planner_backlog.md"),

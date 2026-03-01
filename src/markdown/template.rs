@@ -58,7 +58,7 @@ agents:
     model: "gpt-4.1"
 
 execution:
-  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first | opencode_only | opencode_claude | opencode_codex
+  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first | opencode_impl_no_review | opencode_impl_claude_review | opencode_impl_codex_review | claude_impl_opencode_review | codex_impl_opencode_review
   profile_strategy:
     alternating: []    # e.g. ["cheap_checkpoints", "quality_gate"] (cycleごとに交互切替)
     every_n_cycles: [] # e.g. [{ interval: 3, profile: "unblock_first", offset: 0 }]
@@ -496,25 +496,25 @@ Aggressive unblocking. Codex on first verify failure. Claude diagnosis on contin
 "#
 }
 
-pub fn profile_opencode_only_md() -> &'static str {
-    r#"# Profile: opencode_only
+pub fn profile_opencode_impl_no_review_md() -> &'static str {
+    r#"# Profile: opencode_impl_no_review
 
 ## Description
 
-All processing done by opencode(local_llm) only. If stuck, mark as blocked.
+Use opencode(local_llm) for implementation only, with no dedicated review.
 
 ## Rules
 
 - **Default agent**: local_llm
-- **Review agent**: local_llm
+- **Review agent**: none
 - **Escalation**: None
 - **Security gate**: Disabled
 - **Size gate**: Disabled
 "#
 }
 
-pub fn profile_opencode_claude_md() -> &'static str {
-    r#"# Profile: opencode_claude
+pub fn profile_opencode_impl_claude_review_md() -> &'static str {
+    r#"# Profile: opencode_impl_claude_review
 
 ## Description
 
@@ -530,8 +530,8 @@ Use opencode(local_llm) by default and route review/escalation to claude.
 "#
 }
 
-pub fn profile_opencode_codex_md() -> &'static str {
-    r#"# Profile: opencode_codex
+pub fn profile_opencode_impl_codex_review_md() -> &'static str {
+    r#"# Profile: opencode_impl_codex_review
 
 ## Description
 
@@ -541,6 +541,40 @@ Use opencode(local_llm) by default and route review/escalation to codex.
 
 - **Default agent**: local_llm
 - **Review agent**: codex
+- **Escalation**: 2 failures → codex
+- **Security gate**: Disabled
+- **Size gate**: Disabled
+"#
+}
+
+pub fn profile_claude_impl_opencode_review_md() -> &'static str {
+    r#"# Profile: claude_impl_opencode_review
+
+## Description
+
+Use claude for implementation and opencode(local_llm) for review.
+
+## Rules
+
+- **Default agent**: claude
+- **Review agent**: local_llm
+- **Escalation**: 2 failures → claude
+- **Security gate**: Enabled
+- **Size gate**: Enabled
+"#
+}
+
+pub fn profile_codex_impl_opencode_review_md() -> &'static str {
+    r#"# Profile: codex_impl_opencode_review
+
+## Description
+
+Use codex for implementation and opencode(local_llm) for review.
+
+## Rules
+
+- **Default agent**: codex
+- **Review agent**: local_llm
 - **Escalation**: 2 failures → codex
 - **Security gate**: Disabled
 - **Size gate**: Disabled

@@ -547,6 +547,82 @@ execution:
     }
 
     #[test]
+    fn parse_execution_profile_with_impl_review_name() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: claude_impl_opencode_review
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(
+            cfg.execution.profile,
+            Some(ProfileName::ClaudeImplOpencodeReview)
+        );
+    }
+
+    #[test]
+    fn parse_execution_profile_with_legacy_swapped_alias() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: opencode_claude_swapped
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(
+            cfg.execution.profile,
+            Some(ProfileName::ClaudeImplOpencodeReview)
+        );
+    }
+
+    #[test]
+    fn parse_execution_profile_with_opencode_impl_name() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: opencode_impl_claude_review
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(
+            cfg.execution.profile,
+            Some(ProfileName::OpencodeImplClaudeReview)
+        );
+    }
+
+    #[test]
+    fn parse_execution_profile_with_legacy_opencode_alias() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: opencode_claude
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(
+            cfg.execution.profile,
+            Some(ProfileName::OpencodeImplClaudeReview)
+        );
+    }
+
+    #[test]
     fn resolve_profile_name_with_alternating() {
         let yml = r#"
 version: 1

@@ -1,13 +1,13 @@
-# Profile: opencode_only
+# Profile: opencode_impl_no_review
 
 ## Description
 
-All processing done by opencode(local_llm) only. If stuck, mark as blocked.
+Use opencode(local_llm) for implementation only, with no dedicated review.
 
 ## Rules
 
 - **Default agent**: local_llm
-- **Review agent**: local_llm
+- **Review agent**: none
 - **Escalation**: None
 - **Security gate**: Disabled
 - **Size gate**: Disabled

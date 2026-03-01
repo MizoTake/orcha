@@ -9,9 +9,16 @@ pub enum ProfileName {
     CheapCheckpoints,
     QualityGate,
     UnblockFirst,
-    OpencodeOnly,
-    OpencodeClaude,
-    OpencodeCodex,
+    #[serde(alias = "opencode_only")]
+    OpencodeImplNoReview,
+    #[serde(alias = "opencode_claude")]
+    OpencodeImplClaudeReview,
+    #[serde(alias = "opencode_codex")]
+    OpencodeImplCodexReview,
+    #[serde(alias = "opencode_claude_swapped")]
+    ClaudeImplOpencodeReview,
+    #[serde(alias = "opencode_codex_swapped")]
+    CodexImplOpencodeReview,
     CodexReview,
 }
 
@@ -22,9 +29,16 @@ impl ProfileName {
             "cheap_checkpoints" => Some(ProfileName::CheapCheckpoints),
             "quality_gate" => Some(ProfileName::QualityGate),
             "unblock_first" => Some(ProfileName::UnblockFirst),
-            "opencode_only" => Some(ProfileName::OpencodeOnly),
-            "opencode_claude" => Some(ProfileName::OpencodeClaude),
-            "opencode_codex" => Some(ProfileName::OpencodeCodex),
+            "opencode_impl_no_review" => Some(ProfileName::OpencodeImplNoReview),
+            "opencode_only" => Some(ProfileName::OpencodeImplNoReview),
+            "opencode_impl_claude_review" => Some(ProfileName::OpencodeImplClaudeReview),
+            "opencode_claude" => Some(ProfileName::OpencodeImplClaudeReview),
+            "opencode_impl_codex_review" => Some(ProfileName::OpencodeImplCodexReview),
+            "opencode_codex" => Some(ProfileName::OpencodeImplCodexReview),
+            "claude_impl_opencode_review" => Some(ProfileName::ClaudeImplOpencodeReview),
+            "opencode_claude_swapped" => Some(ProfileName::ClaudeImplOpencodeReview),
+            "codex_impl_opencode_review" => Some(ProfileName::CodexImplOpencodeReview),
+            "opencode_codex_swapped" => Some(ProfileName::CodexImplOpencodeReview),
             "codex_review" => Some(ProfileName::CodexReview),
             _ => None,
         }
@@ -36,9 +50,11 @@ impl ProfileName {
             ProfileName::CheapCheckpoints,
             ProfileName::QualityGate,
             ProfileName::UnblockFirst,
-            ProfileName::OpencodeOnly,
-            ProfileName::OpencodeClaude,
-            ProfileName::OpencodeCodex,
+            ProfileName::OpencodeImplNoReview,
+            ProfileName::OpencodeImplClaudeReview,
+            ProfileName::OpencodeImplCodexReview,
+            ProfileName::ClaudeImplOpencodeReview,
+            ProfileName::CodexImplOpencodeReview,
             ProfileName::CodexReview,
         ]
     }
@@ -51,9 +67,19 @@ impl fmt::Display for ProfileName {
             ProfileName::CheapCheckpoints => write!(f, "cheap_checkpoints"),
             ProfileName::QualityGate => write!(f, "quality_gate"),
             ProfileName::UnblockFirst => write!(f, "unblock_first"),
-            ProfileName::OpencodeOnly => write!(f, "opencode_only"),
-            ProfileName::OpencodeClaude => write!(f, "opencode_claude"),
-            ProfileName::OpencodeCodex => write!(f, "opencode_codex"),
+            ProfileName::OpencodeImplNoReview => write!(f, "opencode_impl_no_review"),
+            ProfileName::OpencodeImplClaudeReview => {
+                write!(f, "opencode_impl_claude_review")
+            }
+            ProfileName::OpencodeImplCodexReview => {
+                write!(f, "opencode_impl_codex_review")
+            }
+            ProfileName::ClaudeImplOpencodeReview => {
+                write!(f, "claude_impl_opencode_review")
+            }
+            ProfileName::CodexImplOpencodeReview => {
+                write!(f, "codex_impl_opencode_review")
+            }
             ProfileName::CodexReview => write!(f, "codex_review"),
         }
     }
@@ -143,7 +169,7 @@ impl ProfileRules {
                 security_gate_enabled: true,
                 size_gate_enabled: true,
             },
-            ProfileName::OpencodeOnly => ProfileRules {
+            ProfileName::OpencodeImplNoReview => ProfileRules {
                 name,
                 default_agent: AgentPreference::LocalLlm,
                 review_agent: None,
@@ -151,7 +177,7 @@ impl ProfileRules {
                 security_gate_enabled: false,
                 size_gate_enabled: false,
             },
-            ProfileName::OpencodeClaude => ProfileRules {
+            ProfileName::OpencodeImplClaudeReview => ProfileRules {
                 name,
                 default_agent: AgentPreference::LocalLlm,
                 review_agent: Some(AgentPreference::Claude),
@@ -163,10 +189,34 @@ impl ProfileRules {
                 security_gate_enabled: true,
                 size_gate_enabled: true,
             },
-            ProfileName::OpencodeCodex => ProfileRules {
+            ProfileName::OpencodeImplCodexReview => ProfileRules {
                 name,
                 default_agent: AgentPreference::LocalLlm,
                 review_agent: Some(AgentPreference::Codex),
+                escalation: Some(EscalationRule {
+                    failure_threshold: 2,
+                    escalate_to: AgentPreference::Codex,
+                    continued_failure_to: None,
+                }),
+                security_gate_enabled: false,
+                size_gate_enabled: false,
+            },
+            ProfileName::ClaudeImplOpencodeReview => ProfileRules {
+                name,
+                default_agent: AgentPreference::Claude,
+                review_agent: Some(AgentPreference::LocalLlm),
+                escalation: Some(EscalationRule {
+                    failure_threshold: 2,
+                    escalate_to: AgentPreference::Claude,
+                    continued_failure_to: None,
+                }),
+                security_gate_enabled: true,
+                size_gate_enabled: true,
+            },
+            ProfileName::CodexImplOpencodeReview => ProfileRules {
+                name,
+                default_agent: AgentPreference::Codex,
+                review_agent: Some(AgentPreference::LocalLlm),
                 escalation: Some(EscalationRule {
                     failure_threshold: 2,
                     escalate_to: AgentPreference::Codex,
@@ -191,7 +241,7 @@ impl ProfileRules {
     }
 
     pub fn is_paid_available(&self) -> bool {
-        self.name != ProfileName::LocalOnly && self.name != ProfileName::OpencodeOnly
+        self.name != ProfileName::LocalOnly && self.name != ProfileName::OpencodeImplNoReview
     }
 }
 
@@ -201,14 +251,22 @@ mod tests {
 
     #[test]
     fn from_str_accepts_opencode_custom_profiles() {
+        assert!(ProfileName::from_str("opencode_impl_no_review").is_some());
+        assert!(ProfileName::from_str("opencode_impl_claude_review").is_some());
+        assert!(ProfileName::from_str("opencode_impl_codex_review").is_some());
         assert!(ProfileName::from_str("opencode_only").is_some());
         assert!(ProfileName::from_str("opencode_claude").is_some());
         assert!(ProfileName::from_str("opencode_codex").is_some());
+        assert!(ProfileName::from_str("claude_impl_opencode_review").is_some());
+        assert!(ProfileName::from_str("codex_impl_opencode_review").is_some());
+        assert!(ProfileName::from_str("opencode_claude_swapped").is_some());
+        assert!(ProfileName::from_str("opencode_codex_swapped").is_some());
     }
 
     #[test]
-    fn opencode_claude_prefers_claude_for_review_and_escalation() {
-        let profile = ProfileName::from_str("opencode_claude").expect("profile exists");
+    fn opencode_impl_claude_review_prefers_claude_for_review_and_escalation() {
+        let profile =
+            ProfileName::from_str("opencode_impl_claude_review").expect("profile exists");
         let rules = ProfileRules::from_name(profile);
 
         assert_eq!(rules.default_agent, AgentPreference::LocalLlm);
@@ -221,12 +279,43 @@ mod tests {
     }
 
     #[test]
-    fn opencode_codex_uses_codex_without_claude_gates() {
-        let profile = ProfileName::from_str("opencode_codex").expect("profile exists");
+    fn opencode_impl_codex_review_uses_codex_without_claude_gates() {
+        let profile =
+            ProfileName::from_str("opencode_impl_codex_review").expect("profile exists");
         let rules = ProfileRules::from_name(profile);
 
         assert_eq!(rules.default_agent, AgentPreference::LocalLlm);
         assert_eq!(rules.review_agent, Some(AgentPreference::Codex));
+        let escalation = rules.escalation.expect("escalation exists");
+        assert_eq!(escalation.failure_threshold, 2);
+        assert_eq!(escalation.escalate_to, AgentPreference::Codex);
+        assert!(!rules.security_gate_enabled);
+        assert!(!rules.size_gate_enabled);
+    }
+
+    #[test]
+    fn claude_impl_opencode_review_uses_claude_for_default_and_local_for_review() {
+        let profile =
+            ProfileName::from_str("claude_impl_opencode_review").expect("profile exists");
+        let rules = ProfileRules::from_name(profile);
+
+        assert_eq!(rules.default_agent, AgentPreference::Claude);
+        assert_eq!(rules.review_agent, Some(AgentPreference::LocalLlm));
+        let escalation = rules.escalation.expect("escalation exists");
+        assert_eq!(escalation.failure_threshold, 2);
+        assert_eq!(escalation.escalate_to, AgentPreference::Claude);
+        assert!(rules.security_gate_enabled);
+        assert!(rules.size_gate_enabled);
+    }
+
+    #[test]
+    fn codex_impl_opencode_review_uses_codex_for_default_and_local_for_review() {
+        let profile =
+            ProfileName::from_str("codex_impl_opencode_review").expect("profile exists");
+        let rules = ProfileRules::from_name(profile);
+
+        assert_eq!(rules.default_agent, AgentPreference::Codex);
+        assert_eq!(rules.review_agent, Some(AgentPreference::LocalLlm));
         let escalation = rules.escalation.expect("escalation exists");
         assert_eq!(escalation.failure_threshold, 2);
         assert_eq!(escalation.escalate_to, AgentPreference::Codex);

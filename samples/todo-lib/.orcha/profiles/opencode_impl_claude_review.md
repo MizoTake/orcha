@@ -1,4 +1,4 @@
-# Profile: opencode_claude
+# Profile: opencode_impl_claude_review
 
 ## Description
 

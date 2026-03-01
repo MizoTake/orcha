@@ -36,7 +36,7 @@ pub enum Command {
 
     /// Change active profile
     Profile {
-        /// Profile name: local_only, cheap_checkpoints, quality_gate, unblock_first, opencode_only, opencode_claude, opencode_codex
+        /// Profile name: local_only, cheap_checkpoints, quality_gate, unblock_first, opencode_impl_no_review, opencode_impl_claude_review, opencode_impl_codex_review, claude_impl_opencode_review, codex_impl_opencode_review
         name: String,
     },
 
