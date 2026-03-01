@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,7 +81,7 @@ pub enum ProviderMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionConfig {
     #[serde(default)]
-    pub profile: Option<ProfileName>,
+    pub profile: Option<ProfileRef>,
     #[serde(default)]
     pub profile_strategy: ProfileStrategyConfig,
     #[serde(default)]
@@ -100,7 +101,7 @@ pub struct CliLimitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProfileStrategyConfig {
     #[serde(default)]
-    pub alternating: Vec<ProfileName>,
+    pub alternating: Vec<ProfileRef>,
     #[serde(default)]
     pub every_n_cycles: Vec<EveryNCycleProfileSwitch>,
     #[serde(default)]
@@ -110,14 +111,14 @@ pub struct ProfileStrategyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EveryNCycleProfileSwitch {
     pub interval: u32,
-    pub profile: ProfileName,
+    pub profile: ProfileRef,
     #[serde(default)]
     pub offset: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileMixinConfig {
-    pub from: ProfileName,
+    pub from: ProfileRef,
     #[serde(default)]
     pub fields: Vec<ProfileRuleField>,
     #[serde(default)]
@@ -142,6 +143,40 @@ pub struct VerificationConfig {
     pub commands: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct ProfileRef(String);
+
+impl ProfileRef {
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_profile_name(&self) -> Option<ProfileName> {
+        ProfileName::from_str(&self.0)
+    }
+
+    pub fn normalized_key(&self) -> String {
+        normalize_profile_key(&self.0)
+    }
+}
+
+impl From<ProfileName> for ProfileRef {
+    fn from(value: ProfileName) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl fmt::Display for ProfileRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", normalize_profile_key(&self.0))
+    }
+}
+
 impl MachineConfig {
     pub fn path(orch_dir: &Path) -> PathBuf {
         orch_dir.join(MACHINE_CONFIG_FILE)
@@ -160,12 +195,15 @@ impl MachineConfig {
 }
 
 impl ExecutionConfig {
-    pub fn resolve_profile_name(&self, cycle: u32, fallback: ProfileName) -> ProfileName {
-        let mut current = self.profile.unwrap_or(fallback);
+    pub fn resolve_profile_ref(&self, cycle: u32, fallback: ProfileName) -> ProfileRef {
+        let mut current = self
+            .profile
+            .clone()
+            .unwrap_or_else(|| ProfileRef::from(fallback));
 
         if !self.profile_strategy.alternating.is_empty() {
             let idx = (cycle as usize) % self.profile_strategy.alternating.len();
-            current = self.profile_strategy.alternating[idx];
+            current = self.profile_strategy.alternating[idx].clone();
         }
 
         for switch in &self.profile_strategy.every_n_cycles {
@@ -173,11 +211,17 @@ impl ExecutionConfig {
                 continue;
             }
             if cycle >= switch.offset && (cycle - switch.offset) % switch.interval == 0 {
-                current = switch.profile;
+                current = switch.profile.clone();
             }
         }
 
         current
+    }
+
+    pub fn resolve_profile_name(&self, cycle: u32, fallback: ProfileName) -> ProfileName {
+        self.resolve_profile_ref(cycle, fallback)
+            .as_profile_name()
+            .unwrap_or(fallback)
     }
 
     pub fn resolve_profile_rules(&self, cycle: u32, fallback: ProfileName) -> ProfileRules {
@@ -188,8 +232,10 @@ impl ExecutionConfig {
             if !mixin_applies(cycle, mixin) {
                 continue;
             }
-            let source = ProfileRules::from_name(mixin.from);
-            apply_mixin(&mut resolved, &source, &mixin.fields);
+            if let Some(from) = mixin.from.as_profile_name() {
+                let source = ProfileRules::from_name(from);
+                apply_mixin(&mut resolved, &source, &mixin.fields);
+            }
         }
 
         resolved
@@ -350,9 +396,13 @@ fn default_disable_agent_on_limit() -> bool {
     true
 }
 
+fn normalize_profile_key(raw: &str) -> String {
+    raw.trim().to_lowercase().replace('-', "_")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionConfig, MachineConfig, ProfileRuleField, ProviderMode};
+    use super::{ExecutionConfig, MachineConfig, ProfileRef, ProfileRuleField, ProviderMode};
     use crate::core::profile::{AgentPreference, ProfileName};
 
     #[test]
@@ -570,7 +620,13 @@ execution:
 "#;
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(cfg.execution.profile, Some(ProfileName::QualityGate));
+        assert_eq!(
+            cfg.execution
+                .profile
+                .as_ref()
+                .and_then(|p| p.as_profile_name()),
+            Some(ProfileName::QualityGate)
+        );
     }
 
     #[test]
@@ -587,13 +643,16 @@ execution:
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
         assert_eq!(
-            cfg.execution.profile,
+            cfg.execution
+                .profile
+                .as_ref()
+                .and_then(|p| p.as_profile_name()),
             Some(ProfileName::ClaudeImplOpencodeReview)
         );
     }
 
     #[test]
-    fn parse_execution_profile_rejects_legacy_swapped_alias() {
+    fn parse_execution_profile_accepts_unknown_legacy_alias_as_custom() {
         let yml = r#"
 version: 1
 agents: {}
@@ -604,7 +663,10 @@ execution:
     commands: []
 "#;
 
-        assert!(serde_yaml::from_str::<MachineConfig>(yml).is_err());
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        let parsed = cfg.execution.profile.expect("custom profile should parse");
+        assert_eq!(parsed.normalized_key(), "opencode_claude_swapped");
+        assert!(parsed.as_profile_name().is_none());
     }
 
     #[test]
@@ -621,24 +683,30 @@ execution:
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
         assert_eq!(
-            cfg.execution.profile,
+            cfg.execution
+                .profile
+                .as_ref()
+                .and_then(|p| p.as_profile_name()),
             Some(ProfileName::OpencodeImplClaudeReview)
         );
     }
 
     #[test]
-    fn parse_execution_profile_rejects_legacy_opencode_alias() {
+    fn parse_execution_profile_accepts_custom_name() {
         let yml = r#"
 version: 1
 agents: {}
 execution:
-  profile: opencode_claude
+  profile: claude_impl_no_review
   acceptance_criteria: []
   verification:
     commands: []
 "#;
 
-        assert!(serde_yaml::from_str::<MachineConfig>(yml).is_err());
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        let parsed = cfg.execution.profile.expect("custom profile should parse");
+        assert_eq!(parsed.normalized_key(), "claude_impl_no_review");
+        assert!(parsed.as_profile_name().is_none());
     }
 
     #[test]
@@ -787,12 +855,12 @@ execution:
     #[test]
     fn resolve_profile_rules_with_scheduled_mixin() {
         let mut execution = ExecutionConfig::default();
-        execution.profile = Some(ProfileName::CheapCheckpoints);
+        execution.profile = Some(ProfileRef::from(ProfileName::CheapCheckpoints));
         execution
             .profile_strategy
             .mixins
             .push(super::ProfileMixinConfig {
-                from: ProfileName::QualityGate,
+                from: ProfileRef::from(ProfileName::QualityGate),
                 fields: vec![ProfileRuleField::Escalation],
                 every_n_cycles: Some(2),
                 offset: 1,
@@ -808,6 +876,33 @@ execution:
         assert_eq!(
             rules1.escalation.expect("escalation exists").escalate_to,
             AgentPreference::Claude
+        );
+    }
+
+    #[test]
+    fn resolve_profile_name_for_custom_ref_falls_back_to_status_profile() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile_strategy:
+    alternating: [claude_impl_no_review]
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(
+            cfg.execution
+                .resolve_profile_name(0, ProfileName::CheapCheckpoints),
+            ProfileName::CheapCheckpoints
+        );
+        assert_eq!(
+            cfg.execution
+                .resolve_profile_ref(0, ProfileName::CheapCheckpoints)
+                .normalized_key(),
+            "claude_impl_no_review"
         );
     }
 }

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -235,8 +236,156 @@ impl ProfileRules {
     }
 }
 
+pub fn load_custom_profile_rules(
+    orch_dir: &Path,
+    profile_name: &str,
+    fallback: ProfileName,
+) -> anyhow::Result<Option<ProfileRules>> {
+    let key = normalize_profile_key(profile_name);
+    let profile_path = orch_dir.join("profiles").join(format!("{key}.md"));
+    if !profile_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&profile_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read custom profile file {}: {}",
+            profile_path.display(),
+            e
+        )
+    })?;
+
+    Ok(Some(parse_custom_profile_rules(&raw, fallback)))
+}
+
+fn parse_custom_profile_rules(raw: &str, fallback: ProfileName) -> ProfileRules {
+    let mut rules = ProfileRules::from_name(fallback);
+
+    if let Some(value) = extract_rule_value(raw, "Default agent") {
+        if let Some(agent) = parse_agent_preference(&value) {
+            rules.default_agent = agent;
+        }
+    }
+
+    if let Some(value) = extract_rule_value(raw, "Review agent") {
+        let lower = value.to_ascii_lowercase();
+        if lower.contains("none") || lower.contains("disabled") {
+            rules.review_agent = None;
+        } else if let Some(agent) = parse_agent_preference(&value) {
+            rules.review_agent = Some(agent);
+        }
+    }
+
+    if let Some(value) = extract_rule_value(raw, "Escalation") {
+        rules.escalation = parse_escalation_rule(&value);
+    }
+
+    if let Some(value) = extract_rule_value(raw, "Security gate") {
+        if let Some(enabled) = parse_enabled_disabled(&value) {
+            rules.security_gate_enabled = enabled;
+        }
+    }
+
+    if let Some(value) = extract_rule_value(raw, "Size gate") {
+        if let Some(enabled) = parse_enabled_disabled(&value) {
+            rules.size_gate_enabled = enabled;
+        }
+    }
+
+    rules
+}
+
+fn extract_rule_value(raw: &str, label: &str) -> Option<String> {
+    let prefix = format!("- **{label}**:");
+    raw.lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix).map(|s| s.trim().to_string()))
+}
+
+fn parse_enabled_disabled(value: &str) -> Option<bool> {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower.starts_with("enabled") {
+        Some(true)
+    } else if lower.starts_with("disabled") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn parse_escalation_rule(value: &str) -> Option<EscalationRule> {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower.starts_with("none") || lower.starts_with("disabled") {
+        return None;
+    }
+
+    let normalized = value.replace("->", "→");
+    let parts: Vec<&str> = normalized.split('→').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let threshold = extract_first_u32(parts[0]).unwrap_or(1);
+    let escalate_to = parse_agent_preference(parts[1])?;
+    let continued_failure_to = if parts.len() >= 3 {
+        parse_agent_preference(parts[2])
+    } else {
+        None
+    };
+
+    Some(EscalationRule {
+        failure_threshold: threshold,
+        escalate_to,
+        continued_failure_to,
+    })
+}
+
+fn extract_first_u32(text: &str) -> Option<u32> {
+    let mut digits = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u32>().ok()
+    }
+}
+
+fn parse_agent_preference(value: &str) -> Option<AgentPreference> {
+    let normalized = normalize_profile_key(
+        &value
+            .replace('(', " ")
+            .replace(')', " ")
+            .replace(',', " ")
+            .replace(':', " "),
+    );
+    for token in normalized.split_whitespace() {
+        match token {
+            "local_llm" | "local" | "opencode" => return Some(AgentPreference::LocalLlm),
+            "claude" | "claude_code" | "claudecode" => return Some(AgentPreference::Claude),
+            "gemini" => return Some(AgentPreference::Gemini),
+            "codex" => return Some(AgentPreference::Codex),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_profile_key(raw: &str) -> String {
+    raw.trim().to_lowercase().replace('-', "_")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::{AgentPreference, ProfileName, ProfileRules};
 
     #[test]
@@ -315,5 +464,87 @@ mod tests {
         assert_eq!(escalation.escalate_to, AgentPreference::Codex);
         assert!(!rules.security_gate_enabled);
         assert!(!rules.size_gate_enabled);
+    }
+
+    #[test]
+    fn load_custom_profile_rules_parses_markdown_rules() {
+        let dir = tempdir().expect("tempdir");
+        let profiles_dir = dir.path().join("profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+        fs::write(
+            profiles_dir.join("claude_impl_no_review.md"),
+            r#"# Profile: claude_impl_no_review
+
+## Rules
+
+- **Default agent**: claude
+- **Review agent**: none
+- **Escalation**: None
+- **Security gate**: Disabled
+- **Size gate**: Disabled
+"#,
+        )
+        .expect("write profile");
+
+        let parsed = super::load_custom_profile_rules(
+            dir.path(),
+            "claude_impl_no_review",
+            ProfileName::CheapCheckpoints,
+        )
+        .expect("parse custom profile")
+        .expect("custom profile exists");
+
+        assert_eq!(parsed.default_agent, AgentPreference::Claude);
+        assert_eq!(parsed.review_agent, None);
+        assert!(parsed.escalation.is_none());
+        assert!(!parsed.security_gate_enabled);
+        assert!(!parsed.size_gate_enabled);
+    }
+
+    #[test]
+    fn load_custom_profile_rules_returns_none_when_file_missing() {
+        let dir = tempdir().expect("tempdir");
+        let parsed = super::load_custom_profile_rules(
+            dir.path(),
+            "missing_custom_profile",
+            ProfileName::CheapCheckpoints,
+        )
+        .expect("load should succeed");
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn load_custom_profile_rules_can_override_known_profile_from_file() {
+        let dir = tempdir().expect("tempdir");
+        let profiles_dir = dir.path().join("profiles");
+        fs::create_dir_all(&profiles_dir).expect("create profiles dir");
+        fs::write(
+            profiles_dir.join("cheap_checkpoints.md"),
+            r#"# Profile: cheap_checkpoints
+
+## Rules
+
+- **Default agent**: codex
+- **Review agent**: none
+- **Escalation**: None
+- **Security gate**: Disabled
+- **Size gate**: Disabled
+"#,
+        )
+        .expect("write profile");
+
+        let parsed = super::load_custom_profile_rules(
+            dir.path(),
+            "cheap_checkpoints",
+            ProfileName::CheapCheckpoints,
+        )
+        .expect("parse profile from file")
+        .expect("profile file should exist");
+
+        assert_eq!(parsed.default_agent, AgentPreference::Codex);
+        assert_eq!(parsed.review_agent, None);
+        assert!(parsed.escalation.is_none());
+        assert!(!parsed.security_gate_enabled);
+        assert!(!parsed.size_gate_enabled);
     }
 }

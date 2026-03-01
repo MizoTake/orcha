@@ -7,6 +7,7 @@ use crate::core::cycle::{CycleDecision, Phase};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
 use crate::core::task::TaskState;
+use crate::core::workspace_md;
 
 /// Phase 3: Implementation
 /// Implementer agent executes the next `todo` task.
@@ -54,7 +55,13 @@ pub async fn execute(
     status.frontmatter.locks.active_task = Some(tasks[task_idx].id.clone());
 
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let role = tokio::fs::read_to_string(orch_dir.join("roles").join("implementer.md")).await?;
+    let role_path = workspace_md::resolve_role_file(orch_dir, "implementer")?;
+    let role_name = role_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("implementer.md")
+        .to_string();
+    let role = tokio::fs::read_to_string(&role_path).await?;
 
     let context = AgentContext {
         context_files: vec![
@@ -67,7 +74,7 @@ pub async fn execute(
                 content: status.content.clone(),
             },
             ContextFile {
-                name: "implementer.md".into(),
+                name: role_name,
                 content: role,
             },
         ],
@@ -114,8 +121,9 @@ pub async fn execute(
     .await?;
 
     // Write the implementation response to outbox for external tools
+    let outbox_path = workspace_md::resolve_handoff_file(orch_dir, "outbox")?;
     crate::core::handoff::append_handoff(
-        &orch_dir.join("handoff").join("outbox.md"),
+        &outbox_path,
         &format!("implementer({})", response.model_used),
         &response.content,
     )

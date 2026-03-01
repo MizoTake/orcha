@@ -7,6 +7,7 @@ use crate::core::cycle::CycleDecision;
 use crate::core::handoff;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::core::workspace_md;
 
 /// Phase 1: Briefing
 /// Read goal, status, inbox and prepare context summary for the cycle.
@@ -19,8 +20,15 @@ pub async fn execute(
 
     // Load context files
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let role = tokio::fs::read_to_string(orch_dir.join("roles").join("scribe.md")).await?;
-    let inbox = handoff::read_handoff(&orch_dir.join("handoff").join("inbox.md")).await?;
+    let role_path = workspace_md::resolve_role_file(orch_dir, "scribe")?;
+    let role_name = role_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("scribe.md")
+        .to_string();
+    let role = tokio::fs::read_to_string(&role_path).await?;
+    let inbox_path = workspace_md::resolve_handoff_file(orch_dir, "inbox")?;
+    let inbox = handoff::read_handoff(&inbox_path).await?;
 
     let context = AgentContext {
         context_files: vec![
@@ -36,7 +44,7 @@ pub async fn execute(
                 ),
             },
             ContextFile {
-                name: "scribe.md".into(),
+                name: role_name.clone(),
                 content: role,
             },
         ],
@@ -77,7 +85,7 @@ pub async fn execute(
 
     // Clear inbox after processing
     if !inbox.contains("No pending messages") {
-        handoff::clear_handoff(&orch_dir.join("handoff").join("inbox.md")).await?;
+        handoff::clear_handoff(&inbox_path).await?;
     }
 
     // Update status notes with briefing summary

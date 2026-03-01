@@ -58,7 +58,7 @@ agents:
     model: "gpt-4.1"
 
 execution:
-  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first | opencode_impl_no_review | opencode_impl_claude_review | opencode_impl_codex_review | claude_impl_opencode_review | codex_impl_opencode_review
+  profile: "cheap_checkpoints" # built-ins: local_only | cheap_checkpoints | quality_gate | unblock_first | opencode_impl_no_review | opencode_impl_claude_review | opencode_impl_codex_review | claude_impl_opencode_review | codex_impl_opencode_review (or .orcha/profiles/<name>.md)
   profile_strategy:
     alternating: []    # e.g. ["cheap_checkpoints", "quality_gate"] (cycleごとに交互切替)
     every_n_cycles: [] # e.g. [{ interval: 3, profile: "unblock_first", offset: 0 }]

@@ -11,6 +11,7 @@ use crate::agent::{AgentKind, router::AgentRouter};
 use crate::config::AppConfig;
 use crate::core::cycle::{CycleDecision, Phase, StopReason, MAX_CYCLES};
 use crate::core::error::OrchaError;
+use crate::core::profile;
 use crate::core::agent_workspace;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -83,12 +84,33 @@ pub async fn execute(
             break;
         }
 
-        let resolved_profile_name = machine
+        let resolved_profile_ref = machine
             .execution
-            .resolve_profile_name(status.frontmatter.cycle, status.frontmatter.profile);
-        let profile_rules = machine
+            .resolve_profile_ref(status.frontmatter.cycle, status.frontmatter.profile);
+        let resolved_profile_name = resolved_profile_ref
+            .as_profile_name()
+            .unwrap_or(status.frontmatter.profile);
+        let mut profile_rules = machine
             .execution
             .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);
+        if let Some(file_rules) = profile::load_custom_profile_rules(
+            orch_dir,
+            resolved_profile_ref.as_str(),
+            resolved_profile_name,
+        )? {
+            profile_rules = file_rules;
+            println!(
+                "  {} Using profile rules from .orcha/profiles/{}.md",
+                "✓".green(),
+                resolved_profile_ref.to_string().cyan()
+            );
+        } else if resolved_profile_ref.as_profile_name().is_none() {
+            anyhow::bail!(
+                "Profile '{}' is not built-in and .orcha/profiles/{}.md was not found",
+                resolved_profile_ref.to_string(),
+                resolved_profile_ref.to_string()
+            );
+        }
         let router = AgentRouter::new(config, &profile_rules, &disabled_agents_by_cli_limit)?;
         status.frontmatter.profile = resolved_profile_name;
         let status_before_phase = status.clone();

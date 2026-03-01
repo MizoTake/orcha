@@ -6,6 +6,7 @@ use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, Phase};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::core::workspace_md;
 
 /// Phase 4: Review
 /// Reviewer agent reviews the implementation changes.
@@ -17,15 +18,21 @@ pub async fn execute(
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let role = tokio::fs::read_to_string(orch_dir.join("roles").join("reviewer.md")).await?;
+    let role_path = workspace_md::resolve_role_file(orch_dir, "reviewer")?;
+    let role_name = role_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("reviewer.md")
+        .to_string();
+    let role = tokio::fs::read_to_string(&role_path).await?;
 
     // Try to get git diff for review context
     let diff = get_git_diff().await;
     let diff_lines = diff.as_ref().map(|d| d.lines().count()).unwrap_or(0);
 
     // Read outbox to see latest implementation output
-    let outbox =
-        crate::core::handoff::read_handoff(&orch_dir.join("handoff").join("outbox.md")).await?;
+    let outbox_path = workspace_md::resolve_handoff_file(orch_dir, "outbox")?;
+    let outbox = crate::core::handoff::read_handoff(&outbox_path).await?;
 
     let context = AgentContext {
         context_files: vec![
@@ -38,7 +45,7 @@ pub async fn execute(
                 content: status.content.clone(),
             },
             ContextFile {
-                name: "reviewer.md".into(),
+                name: role_name,
                 content: role,
             },
             ContextFile {

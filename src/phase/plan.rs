@@ -7,6 +7,7 @@ use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
 use crate::core::task::{parse_task_table, Task, TaskState};
+use crate::core::workspace_md;
 use crate::machine_config::MachineConfig;
 
 /// Phase 2: Plan
@@ -36,7 +37,13 @@ pub async fn execute(
     }
 
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
-    let role = tokio::fs::read_to_string(orch_dir.join("roles").join("planner.md")).await?;
+    let role_path = workspace_md::resolve_role_file(orch_dir, "planner")?;
+    let role_name = role_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("planner.md")
+        .to_string();
+    let role = tokio::fs::read_to_string(&role_path).await?;
 
     let context = AgentContext {
         context_files: vec![
@@ -49,7 +56,7 @@ pub async fn execute(
                 content: status.content.clone(),
             },
             ContextFile {
-                name: "planner.md".into(),
+                name: role_name,
                 content: role,
             },
         ],

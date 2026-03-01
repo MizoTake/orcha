@@ -8,3 +8,4 @@ pub mod profile;
 pub mod status;
 pub mod status_log;
 pub mod task;
+pub mod workspace_md;

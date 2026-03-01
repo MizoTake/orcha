@@ -40,7 +40,7 @@ pub enum Command {
 
     /// Change active profile
     Profile {
-        /// Profile name: local_only, cheap_checkpoints, quality_gate, unblock_first, opencode_impl_no_review, opencode_impl_claude_review, opencode_impl_codex_review, claude_impl_opencode_review, codex_impl_opencode_review
+        /// Profile name: built-ins (local_only, cheap_checkpoints, quality_gate, unblock_first, opencode_impl_no_review, opencode_impl_claude_review, opencode_impl_codex_review, claude_impl_opencode_review, codex_impl_opencode_review) or any name that has .orcha/profiles/<name>.md
         name: String,
     },
 

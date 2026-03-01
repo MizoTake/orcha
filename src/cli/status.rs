@@ -27,9 +27,10 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
         .as_ref()
         .map(|m| {
             m.execution
-                .resolve_profile_name(status.frontmatter.cycle, status.frontmatter.profile)
+                .resolve_profile_ref(status.frontmatter.cycle, status.frontmatter.profile)
+                .to_string()
         })
-        .unwrap_or(status.frontmatter.profile);
+        .unwrap_or_else(|| status.frontmatter.profile.to_string());
     let tasks = status.tasks().unwrap_or_default();
 
     let health = Health::evaluate(
@@ -43,7 +44,7 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
 
     // Overview
     println!("  Run ID:  {}", status.frontmatter.run_id.dimmed());
-    println!("  Profile: {}", active_profile.to_string().cyan());
+    println!("  Profile: {}", active_profile.cyan());
     if let Some(machine) = &machine {
         if machine.execution.has_profile_strategy() {
             println!(
