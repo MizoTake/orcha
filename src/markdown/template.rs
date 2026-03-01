@@ -69,6 +69,10 @@ execution:
   max_cycles: 20 # run全体の最大サイクル数
   phase_timeout_seconds: 21600 # 各phaseのタイムアウト（秒）
   max_consecutive_verify_failures: 3 # verify連続失敗で停止
+  human_escalation:
+    on_consecutive_failures: 0 # >0 で連続失敗時に人間へ委譲（0は無効）
+    on_ambiguous_spec: false # true で --spec 時の曖昧点検出で停止して確認要求
+    channel: "terminal" # terminal | slack など（現状はinbox通知に記録）
   acceptance_criteria:
     - "Criterion 1"
     - "Criterion 2"

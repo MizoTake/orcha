@@ -96,9 +96,21 @@ pub struct ExecutionConfig {
     #[serde(default = "default_max_consecutive_verify_failures")]
     pub max_consecutive_verify_failures: u32,
     #[serde(default)]
+    pub human_escalation: HumanEscalationConfig,
+    #[serde(default)]
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub verification: VerificationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanEscalationConfig {
+    #[serde(default)]
+    pub on_consecutive_failures: u32,
+    #[serde(default = "default_human_escalation_on_ambiguous_spec")]
+    pub on_ambiguous_spec: bool,
+    #[serde(default = "default_human_escalation_channel")]
+    pub channel: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,8 +379,19 @@ impl Default for ExecutionConfig {
             max_cycles: default_max_cycles(),
             phase_timeout_seconds: default_phase_timeout_seconds(),
             max_consecutive_verify_failures: default_max_consecutive_verify_failures(),
+            human_escalation: HumanEscalationConfig::default(),
             acceptance_criteria: vec!["Criterion 1".to_string(), "Criterion 2".to_string()],
             verification: VerificationConfig::default(),
+        }
+    }
+}
+
+impl Default for HumanEscalationConfig {
+    fn default() -> Self {
+        Self {
+            on_consecutive_failures: 0,
+            on_ambiguous_spec: default_human_escalation_on_ambiguous_spec(),
+            channel: default_human_escalation_channel(),
         }
     }
 }
@@ -423,6 +446,14 @@ fn default_phase_timeout_seconds() -> u64 {
 
 fn default_max_consecutive_verify_failures() -> u32 {
     3
+}
+
+fn default_human_escalation_on_ambiguous_spec() -> bool {
+    false
+}
+
+fn default_human_escalation_channel() -> String {
+    "terminal".to_string()
 }
 
 fn normalize_profile_key(raw: &str) -> String {
@@ -768,6 +799,9 @@ execution:
         assert!(cfg.execution.max_cycles > 0);
         assert!(cfg.execution.phase_timeout_seconds > 0);
         assert!(cfg.execution.max_consecutive_verify_failures > 0);
+        assert_eq!(cfg.execution.human_escalation.on_consecutive_failures, 0);
+        assert!(!cfg.execution.human_escalation.on_ambiguous_spec);
+        assert_eq!(cfg.execution.human_escalation.channel, "terminal");
     }
 
     #[test]
@@ -822,6 +856,27 @@ execution:
         assert_eq!(cfg.execution.max_cycles, 7);
         assert_eq!(cfg.execution.phase_timeout_seconds, 90);
         assert_eq!(cfg.execution.max_consecutive_verify_failures, 2);
+    }
+
+    #[test]
+    fn parse_human_escalation_options() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  human_escalation:
+    on_consecutive_failures: 3
+    on_ambiguous_spec: true
+    channel: slack
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.execution.human_escalation.on_consecutive_failures, 3);
+        assert!(cfg.execution.human_escalation.on_ambiguous_spec);
+        assert_eq!(cfg.execution.human_escalation.channel, "slack");
     }
 
     #[test]

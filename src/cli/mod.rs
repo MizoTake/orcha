@@ -33,6 +33,10 @@ pub enum Command {
         /// Enforce single-writer lock (default: disabled for concurrent runs).
         #[arg(long, default_value_t = false)]
         enforce_lock: bool,
+
+        /// Specification file path to bootstrap goal/tasks before starting.
+        #[arg(long)]
+        spec: Option<PathBuf>,
     },
 
     /// Display current status
@@ -70,7 +74,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Run {
-                enforce_lock: false
+                enforce_lock: false,
+                spec: None,
             }
         ));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
@@ -82,7 +87,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Run {
-                enforce_lock: true
+                enforce_lock: true,
+                spec: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_accepts_spec_flag_for_run() {
+        let cli = Cli::parse_from(["orcha", "run", "--spec", "requirements.md"]);
+        assert!(matches!(
+            cli.command,
+            Command::Run {
+                enforce_lock: false,
+                spec: Some(_)
             }
         ));
     }

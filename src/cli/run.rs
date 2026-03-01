@@ -1,21 +1,25 @@
-use std::path::Path;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::future::Future;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
+use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::agent::{AgentKind, router::AgentRouter};
+use crate::agent::{AgentContext, AgentKind, ContextFile, router::AgentRouter};
 use crate::config::AppConfig;
 use crate::core::cycle::{CycleDecision, Phase, StopReason};
 use crate::core::error::OrchaError;
+use crate::core::handoff;
 use crate::core::profile;
 use crate::core::agent_workspace;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::core::task::{Task, TaskState, parse_task_table};
 use crate::core::structured_log;
+use crate::core::workspace_md;
 use crate::machine_config::MachineConfig;
 use crate::phase;
 
@@ -24,6 +28,7 @@ pub async fn execute(
     orch_dir: &Path,
     config: &AppConfig,
     allow_concurrent: bool,
+    spec_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
@@ -35,14 +40,9 @@ pub async fn execute(
 
     let mut status = StatusFile::load(&status_path).await?;
 
-    let machine = MachineConfig::load(orch_dir)?;
+    let mut machine = MachineConfig::load(orch_dir)?;
     let max_cycles = machine.execution.max_cycles.max(1);
     let max_consecutive_verify_failures = machine.execution.max_consecutive_verify_failures.max(1);
-    let phase_timeout = if machine.execution.phase_timeout_seconds == 0 {
-        None
-    } else {
-        Some(Duration::from_secs(machine.execution.phase_timeout_seconds))
-    };
     let mut consecutive_verify_failures = 0u32;
 
     // Check stop conditions
@@ -78,6 +78,20 @@ pub async fn execute(
     }
 
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+    let mut diff_baseline = collect_git_numstat_snapshot().await;
+
+    if let Some(bootstrap_request) = resolve_bootstrap_request(orch_dir, &status, spec_path)? {
+        apply_spec_bootstrap(
+            orch_dir,
+            &mut status,
+            &mut machine,
+            config,
+            &bootstrap_request,
+        )
+        .await?;
+        status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+        status.save(&status_path).await?;
+    }
 
     let mut terminal_error: Option<anyhow::Error> = None;
     let mut disabled_agents_by_cli_limit: HashSet<AgentKind> = HashSet::new();
@@ -93,36 +107,16 @@ pub async fn execute(
             break;
         }
 
-        let resolved_profile_ref = machine
-            .execution
-            .resolve_profile_ref(status.frontmatter.cycle, status.frontmatter.profile);
-        let resolved_profile_name = resolved_profile_ref
-            .as_profile_name()
-            .unwrap_or(status.frontmatter.profile);
-        let mut profile_rules = machine
-            .execution
-            .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);
-        if let Some(file_rules) = profile::load_custom_profile_rules(
-            orch_dir,
-            resolved_profile_ref.as_str(),
-            resolved_profile_name,
-        )? {
-            profile_rules = file_rules;
-            println!(
-                "  {} Using profile rules from .orcha/profiles/{}.md",
-                "✓".green(),
-                resolved_profile_ref.to_string().cyan()
-            );
-        } else if resolved_profile_ref.as_profile_name().is_none() {
-            anyhow::bail!(
-                "Profile '{}' is not built-in and .orcha/profiles/{}.md was not found",
-                resolved_profile_ref.to_string(),
-                resolved_profile_ref.to_string()
-            );
-        }
+        let (_resolved_profile_ref, resolved_profile_name, profile_rules) =
+            resolve_profile_rules_for_cycle(orch_dir, &machine, &status, true)?;
         let router = AgentRouter::new(config, &profile_rules, &disabled_agents_by_cli_limit)?;
         status.frontmatter.profile = resolved_profile_name;
         let status_before_phase = status.clone();
+        let phase_timeout = if machine.execution.phase_timeout_seconds == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(machine.execution.phase_timeout_seconds))
+        };
 
         let phase = status.frontmatter.phase;
         status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
@@ -227,6 +221,15 @@ pub async fn execute(
                         );
                     }
                     CycleDecision::NextCycle => {
+                        let completed_cycle = status.frontmatter.cycle;
+                        emit_cycle_progress_summary(
+                            orch_dir,
+                            &log_path,
+                            &status,
+                            completed_cycle,
+                            &mut diff_baseline,
+                        )
+                        .await?;
                         status.start_new_cycle();
                         println!(
                             "  {} -> Starting cycle {}",
@@ -302,11 +305,50 @@ pub async fn execute(
                             &detail,
                         )
                         .await;
+
+                        let human_threshold = machine.execution.human_escalation.on_consecutive_failures;
+                        if human_threshold > 0 && consecutive_verify_failures >= human_threshold {
+                            let reason = format!(
+                                "Human escalation requested after {} consecutive verification failures (threshold: {})",
+                                consecutive_verify_failures, human_threshold
+                            );
+                            request_human_intervention(
+                                orch_dir,
+                                &status,
+                                "verify_failure_threshold",
+                                &reason,
+                                &machine.execution.human_escalation.channel,
+                            )
+                            .await?;
+                            status_log::append(
+                                &log_path,
+                                "decide",
+                                "planner",
+                                "orch",
+                                &reason,
+                            )
+                            .await?;
+                            append_structured_event(
+                                orch_dir,
+                                &status,
+                                phase,
+                                "human_escalation",
+                                &reason,
+                            )
+                            .await;
+                            terminal_error = Some(
+                                OrchaError::StopCondition {
+                                    reason,
+                                }
+                                .into(),
+                            );
+                            stop = true;
+                        }
                     } else if consecutive_verify_failures > 0 {
                         consecutive_verify_failures = 0;
                     }
 
-                    if consecutive_verify_failures >= max_consecutive_verify_failures {
+                    if !stop && consecutive_verify_failures >= max_consecutive_verify_failures {
                         let reason = format!(
                             "Verification failed {} times consecutively (limit: {})",
                             consecutive_verify_failures, max_consecutive_verify_failures
@@ -378,6 +420,29 @@ pub async fn execute(
 
                 if !retry_phase {
                     println!("  {} Phase failed: {}", "✗".red(), err);
+                    let human_threshold = machine.execution.human_escalation.on_consecutive_failures;
+                    if human_threshold > 0 && human_threshold <= 1 {
+                        let reason = format!(
+                            "Human escalation requested because phase '{}' failed: {}",
+                            phase, err
+                        );
+                        request_human_intervention(
+                            orch_dir,
+                            &status,
+                            "phase_failure",
+                            &reason,
+                            &machine.execution.human_escalation.channel,
+                        )
+                        .await?;
+                        append_structured_event(
+                            orch_dir,
+                            &status,
+                            phase,
+                            "human_escalation",
+                            &reason,
+                        )
+                        .await;
+                    }
                     status_log::append(
                         &log_path,
                         &phase.to_string(),
@@ -498,6 +563,638 @@ async fn append_structured_event(
     if let Err(err) = structured_log::append(orch_dir, status, phase, event, message).await {
         eprintln!("  ⚠ structured log write failed: {}", err);
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SpecBootstrapPayload {
+    goal_summary: String,
+    #[serde(default)]
+    acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    verification_commands: Vec<String>,
+    #[serde(default)]
+    ambiguities: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ParsedSpecBootstrap {
+    goal_summary: String,
+    acceptance_criteria: Vec<String>,
+    verification_commands: Vec<String>,
+    ambiguities: Vec<String>,
+    tasks: Vec<Task>,
+}
+
+#[derive(Debug, Clone)]
+struct CycleDiffFileDelta {
+    path: String,
+    added: i64,
+    deleted: i64,
+}
+
+#[derive(Debug, Default)]
+struct CycleDiffSummary {
+    total_added: i64,
+    total_deleted: i64,
+    changed_files: Vec<CycleDiffFileDelta>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecBootstrapMode {
+    FullSync,
+    TaskOnly,
+}
+
+#[derive(Debug)]
+struct SpecBootstrapRequest {
+    source_path: PathBuf,
+    mode: SpecBootstrapMode,
+}
+
+fn resolve_profile_rules_for_cycle(
+    orch_dir: &Path,
+    machine: &MachineConfig,
+    status: &StatusFile,
+    print_custom_profile_notice: bool,
+) -> anyhow::Result<(
+    crate::machine_config::ProfileRef,
+    crate::core::profile::ProfileName,
+    crate::core::profile::ProfileRules,
+)> {
+    let resolved_profile_ref = machine
+        .execution
+        .resolve_profile_ref(status.frontmatter.cycle, status.frontmatter.profile);
+    let resolved_profile_name = resolved_profile_ref
+        .as_profile_name()
+        .unwrap_or(status.frontmatter.profile);
+    let mut profile_rules = machine
+        .execution
+        .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);
+
+    if let Some(file_rules) = profile::load_custom_profile_rules(
+        orch_dir,
+        resolved_profile_ref.as_str(),
+        resolved_profile_name,
+    )? {
+        profile_rules = file_rules;
+        if print_custom_profile_notice {
+            println!(
+                "  {} Using profile rules from .orcha/profiles/{}.md",
+                "✓".green(),
+                resolved_profile_ref.to_string().cyan()
+            );
+        }
+    } else if resolved_profile_ref.as_profile_name().is_none() {
+        anyhow::bail!(
+            "Profile '{}' is not built-in and .orcha/profiles/{}.md was not found",
+            resolved_profile_ref.to_string(),
+            resolved_profile_ref.to_string()
+        );
+    }
+
+    Ok((resolved_profile_ref, resolved_profile_name, profile_rules))
+}
+
+fn resolve_bootstrap_request(
+    orch_dir: &Path,
+    status: &StatusFile,
+    spec_path: Option<&Path>,
+) -> anyhow::Result<Option<SpecBootstrapRequest>> {
+    if let Some(spec_path) = spec_path {
+        return Ok(Some(SpecBootstrapRequest {
+            source_path: resolve_spec_path(spec_path)?,
+            mode: SpecBootstrapMode::FullSync,
+        }));
+    }
+
+    let existing_tasks = status.tasks()?;
+    if existing_tasks.is_empty() {
+        return Ok(Some(SpecBootstrapRequest {
+            source_path: orch_dir.join("goal.md"),
+            mode: SpecBootstrapMode::TaskOnly,
+        }));
+    }
+
+    Ok(None)
+}
+
+async fn apply_spec_bootstrap(
+    orch_dir: &Path,
+    status: &mut StatusFile,
+    machine: &mut MachineConfig,
+    config: &AppConfig,
+    request: &SpecBootstrapRequest,
+) -> anyhow::Result<()> {
+    let resolved_spec_path = request.source_path.clone();
+    let spec_content = tokio::fs::read_to_string(&resolved_spec_path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read spec file '{}': {}",
+            resolved_spec_path.display(),
+            e
+        )
+    })?;
+    let spec_name = resolved_spec_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("spec.md");
+    let goal_path = orch_dir.join("goal.md");
+    let current_goal = tokio::fs::read_to_string(&goal_path)
+        .await
+        .unwrap_or_else(|_| String::new());
+
+    let (_, _, profile_rules) =
+        resolve_profile_rules_for_cycle(orch_dir, machine, status, false)?;
+    let disabled_agents: HashSet<AgentKind> = HashSet::new();
+    let router = AgentRouter::new(config, &profile_rules, &disabled_agents)?;
+
+    let instruction = match request.mode {
+        SpecBootstrapMode::FullSync => full_spec_bootstrap_instruction().to_string(),
+        SpecBootstrapMode::TaskOnly => task_breakdown_instruction().to_string(),
+    };
+    let context = AgentContext {
+        context_files: vec![
+            ContextFile {
+                name: spec_name.to_string(),
+                content: spec_content,
+            },
+            ContextFile {
+                name: "goal.md".to_string(),
+                content: current_goal,
+            },
+            ContextFile {
+                name: "status.md".to_string(),
+                content: status.content.clone(),
+            },
+        ],
+        instruction,
+    };
+
+    let bootstrap_label = match request.mode {
+        SpecBootstrapMode::FullSync => "spec bootstrap",
+        SpecBootstrapMode::TaskOnly => "task breakdown",
+    };
+    println!("  {} {}: {}", "▶".green(), bootstrap_label, resolved_spec_path.display());
+    let response = router.default_agent().respond(&context).await?;
+    crate::core::agent_workspace::write_response(
+        orch_dir,
+        status.frontmatter.cycle,
+        match request.mode {
+            SpecBootstrapMode::FullSync => "spec_bootstrap",
+            SpecBootstrapMode::TaskOnly => "task_breakdown",
+        },
+        "planner",
+        &response.model_used,
+        &response.content,
+    )
+    .await?;
+
+    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+    match request.mode {
+        SpecBootstrapMode::FullSync => {
+            let parsed = parse_spec_bootstrap_response(&response.content)?;
+            let new_goal = render_goal_from_spec(spec_name, &parsed);
+            tokio::fs::write(&goal_path, new_goal).await?;
+
+            if !parsed.acceptance_criteria.is_empty() {
+                machine.execution.acceptance_criteria = parsed.acceptance_criteria.clone();
+            }
+            if !parsed.verification_commands.is_empty() {
+                machine.execution.verification.commands = parsed.verification_commands.clone();
+            }
+
+            let machine_path = MachineConfig::path(orch_dir);
+            let machine_yaml = serde_yaml::to_string(machine)?;
+            tokio::fs::write(&machine_path, machine_yaml).await?;
+
+            if !parsed.tasks.is_empty() {
+                status.replace_task_table(&parsed.tasks);
+            }
+
+            let applied_summary = format!(
+                "Spec bootstrap applied from {} (criteria: {}, verify commands: {}, tasks: {}, ambiguities: {})",
+                spec_name,
+                machine.execution.acceptance_criteria.len(),
+                machine.execution.verification.commands.len(),
+                parsed.tasks.len(),
+                parsed.ambiguities.len()
+            );
+            status_log::append(
+                &log_path,
+                "briefing",
+                "scribe",
+                &response.model_used,
+                &applied_summary,
+            )
+            .await?;
+            append_structured_event(
+                orch_dir,
+                status,
+                Phase::Briefing,
+                "spec_bootstrap_applied",
+                &applied_summary,
+            )
+            .await;
+
+            if machine.execution.human_escalation.on_ambiguous_spec && !parsed.ambiguities.is_empty()
+            {
+                let reason = format!(
+                    "Specification contains ambiguities requiring human input:\n- {}",
+                    parsed.ambiguities.join("\n- ")
+                );
+                request_human_intervention(
+                    orch_dir,
+                    status,
+                    "ambiguous_spec",
+                    &reason,
+                    &machine.execution.human_escalation.channel,
+                )
+                .await?;
+                status_log::append(
+                    &log_path,
+                    "briefing",
+                    "scribe",
+                    "orch",
+                    "Spec bootstrap stopped for human clarification",
+                )
+                .await?;
+                return Err(OrchaError::StopCondition {
+                    reason: "Ambiguous specification requires human input".to_string(),
+                }
+                .into());
+            }
+        }
+        SpecBootstrapMode::TaskOnly => {
+            let tasks = parse_task_breakdown_response(
+                &response.content,
+                &machine.execution.acceptance_criteria,
+            )?;
+            if !tasks.is_empty() {
+                status.replace_task_table(&tasks);
+            }
+            let applied_summary = format!(
+                "Task breakdown initialized from {} (tasks: {})",
+                spec_name,
+                tasks.len()
+            );
+            status_log::append(
+                &log_path,
+                "plan",
+                "planner",
+                &response.model_used,
+                &applied_summary,
+            )
+            .await?;
+            append_structured_event(
+                orch_dir,
+                status,
+                Phase::Plan,
+                "task_breakdown_applied",
+                &applied_summary,
+            )
+            .await;
+        }
+    }
+
+    Ok(())
+}
+
+fn full_spec_bootstrap_instruction() -> &'static str {
+    "Analyze the provided specification and output exactly two parts:\n\
+1) A single JSON fenced code block with keys:\n\
+   - goal_summary: string\n\
+   - acceptance_criteria: string[]\n\
+   - verification_commands: string[]\n\
+   - ambiguities: string[]\n\
+2) A markdown task table in this exact format:\n\
+| ID | Title | State | Owner | Evidence | Notes |\n\
+|---|---|---|---|---|---|\n\
+| T1 | Task title | todo | implementer | | reason |\n\
+\n\
+Rules:\n\
+- Keep acceptance_criteria concrete and testable.\n\
+- verification_commands must be runnable shell commands.\n\
+- Put uncertain points in ambiguities.\n\
+- State must be todo for all initial tasks."
+}
+
+fn task_breakdown_instruction() -> &'static str {
+    "Break down the provided goal/spec into an initial task plan.\n\
+Return a markdown task table in this exact format:\n\
+| ID | Title | State | Owner | Evidence | Notes |\n\
+|---|---|---|---|---|---|\n\
+| T1 | Task title | todo | implementer | | reason |\n\
+\n\
+Rules:\n\
+- Create atomic tasks that can be completed in short cycles.\n\
+- Set State to todo for all rows.\n\
+- Keep IDs sequential as T1, T2, T3..."
+}
+
+fn parse_task_breakdown_response(
+    response: &str,
+    fallback_criteria: &[String],
+) -> anyhow::Result<Vec<Task>> {
+    if let Ok(tasks) = parse_task_table(response) {
+        if !tasks.is_empty() {
+            return Ok(tasks);
+        }
+    }
+
+    let fallback = tasks_from_criteria(fallback_criteria);
+    if fallback.is_empty() {
+        anyhow::bail!("Task breakdown response did not contain a valid task table");
+    }
+
+    Ok(fallback)
+}
+
+fn resolve_spec_path(spec_path: &Path) -> anyhow::Result<PathBuf> {
+    if spec_path.is_absolute() {
+        return Ok(spec_path.to_path_buf());
+    }
+    Ok(std::env::current_dir()?.join(spec_path))
+}
+
+fn parse_spec_bootstrap_response(response: &str) -> anyhow::Result<ParsedSpecBootstrap> {
+    let json_block = extract_fenced_block(response, "json").ok_or_else(|| {
+        anyhow::anyhow!(
+            "Spec bootstrap response must include a JSON fenced block with goal_summary/acceptance_criteria/verification_commands/ambiguities"
+        )
+    })?;
+    let payload: SpecBootstrapPayload = serde_json::from_str(&json_block).map_err(|e| {
+        anyhow::anyhow!("Failed to parse spec bootstrap JSON block: {}", e)
+    })?;
+
+    let acceptance_criteria = normalize_non_empty_lines(&payload.acceptance_criteria);
+    let verification_commands = normalize_non_empty_lines(&payload.verification_commands);
+    let ambiguities = normalize_non_empty_lines(&payload.ambiguities);
+    let tasks = match parse_task_table(response) {
+        Ok(parsed) if !parsed.is_empty() => parsed,
+        _ => tasks_from_criteria(&acceptance_criteria),
+    };
+
+    Ok(ParsedSpecBootstrap {
+        goal_summary: payload.goal_summary.trim().to_string(),
+        acceptance_criteria,
+        verification_commands,
+        ambiguities,
+        tasks,
+    })
+}
+
+fn extract_fenced_block(raw: &str, language: &str) -> Option<String> {
+    let mut in_block = false;
+    let mut matches_language = false;
+    let mut lines = Vec::new();
+    let lang = language.to_ascii_lowercase();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("```") {
+            if !in_block {
+                in_block = true;
+                let declared = rest.trim().to_ascii_lowercase();
+                matches_language = declared.is_empty() || declared == lang;
+                continue;
+            }
+            if in_block && matches_language {
+                return Some(lines.join("\n"));
+            }
+            in_block = false;
+            matches_language = false;
+            lines.clear();
+            continue;
+        }
+
+        if in_block && matches_language {
+            lines.push(line.to_string());
+        }
+    }
+
+    None
+}
+
+fn normalize_non_empty_lines(items: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for item in items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let key = trimmed.to_ascii_lowercase();
+        if seen.insert(key) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized
+}
+
+fn tasks_from_criteria(criteria: &[String]) -> Vec<Task> {
+    criteria
+        .iter()
+        .enumerate()
+        .map(|(idx, criterion)| Task {
+            id: format!("T{}", idx + 1),
+            title: sanitize_markdown_cell(criterion),
+            state: TaskState::Todo,
+            owner: "implementer".to_string(),
+            evidence: String::new(),
+            notes: "Generated from spec acceptance criteria".to_string(),
+        })
+        .collect()
+}
+
+fn sanitize_markdown_cell(value: &str) -> String {
+    value.replace('|', "/").trim().to_string()
+}
+
+fn render_goal_from_spec(spec_name: &str, parsed: &ParsedSpecBootstrap) -> String {
+    let mut out = String::new();
+    out.push_str("# Goal\n\n");
+    out.push_str("## Background\n\n");
+    if parsed.goal_summary.is_empty() {
+        out.push_str("- Generated from spec bootstrap.\n");
+    } else {
+        out.push_str(&parsed.goal_summary);
+        out.push('\n');
+    }
+    out.push_str("\n## Acceptance Criteria\n\n");
+    if parsed.acceptance_criteria.is_empty() {
+        out.push_str("- [ ] Define acceptance criteria from specification\n");
+    } else {
+        for criterion in &parsed.acceptance_criteria {
+            out.push_str(&format!("- [ ] {}\n", criterion));
+        }
+    }
+    out.push_str("\n## Constraints\n\n");
+    out.push_str(&format!("- Source spec: {}\n", spec_name));
+    if !parsed.ambiguities.is_empty() {
+        out.push_str("- Ambiguities to clarify:\n");
+        for ambiguity in &parsed.ambiguities {
+            out.push_str(&format!("  - {}\n", ambiguity));
+        }
+    }
+    out.push_str("\n## Verification Commands\n\n");
+    out.push_str("Execution commands are defined in `orcha.yml` under:\n\n");
+    out.push_str("```yaml\nexecution:\n  verification:\n    commands:\n");
+    for command in &parsed.verification_commands {
+        out.push_str(&format!("      - \"{}\"\n", command.replace('\"', "\\\"")));
+    }
+    out.push_str("```\n\n");
+    out.push_str("## Quality Priority\n\n");
+    out.push_str("quality\n");
+    out
+}
+
+async fn request_human_intervention(
+    orch_dir: &Path,
+    status: &StatusFile,
+    trigger: &str,
+    reason: &str,
+    channel: &str,
+) -> anyhow::Result<()> {
+    let inbox_path = workspace_md::resolve_handoff_file(orch_dir, "inbox")?;
+    let message = format!(
+        "## Human Escalation Required\n\n- trigger: {}\n- channel: {}\n- run_id: {}\n- cycle: {}\n- phase: {}\n\n{}\n",
+        trigger,
+        channel,
+        status.frontmatter.run_id,
+        status.frontmatter.cycle,
+        status.frontmatter.phase,
+        reason
+    );
+    handoff::append_handoff(&inbox_path, "orcha", &message).await?;
+    println!(
+        "  {} Human escalation ({}) queued: {}",
+        "⚠".yellow(),
+        channel,
+        inbox_path.display()
+    );
+    Ok(())
+}
+
+async fn emit_cycle_progress_summary(
+    orch_dir: &Path,
+    log_path: &Path,
+    status: &StatusFile,
+    cycle: u32,
+    diff_baseline: &mut Option<BTreeMap<String, (i64, i64)>>,
+) -> anyhow::Result<()> {
+    let Some(current_snapshot) = collect_git_numstat_snapshot().await else {
+        return Ok(());
+    };
+    let summary = build_cycle_diff_summary(diff_baseline.as_ref(), &current_snapshot);
+    *diff_baseline = Some(current_snapshot);
+
+    let (pass_count, fail_count) = parse_verify_status_counts(&status.content);
+    let total_verify = pass_count + fail_count;
+    let verify_part = if total_verify > 0 {
+        format!(" / verify: {}/{} pass", pass_count, total_verify)
+    } else {
+        String::new()
+    };
+    let top_files = summary
+        .changed_files
+        .iter()
+        .take(3)
+        .map(|d| format!("{} ({:+}/{:+})", d.path, d.added, d.deleted))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail_part = if top_files.is_empty() {
+        String::new()
+    } else {
+        format!(" / {}", top_files)
+    };
+    let message = format!(
+        "Cycle {} diff: Δ+{} Δ-{} ({} files){}{}",
+        cycle,
+        summary.total_added,
+        summary.total_deleted,
+        summary.changed_files.len(),
+        verify_part,
+        detail_part
+    );
+    println!("  {} {}", "ℹ".cyan(), message);
+    status_log::append(log_path, "decide", "planner", "orch", &message).await?;
+    append_structured_event(orch_dir, status, Phase::Decide, "cycle_summary", &message).await;
+    Ok(())
+}
+
+async fn collect_git_numstat_snapshot() -> Option<BTreeMap<String, (i64, i64)>> {
+    let output = Command::new("git")
+        .args(["diff", "--numstat", "HEAD"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Some(parse_git_numstat_snapshot(&stdout))
+}
+
+fn parse_git_numstat_snapshot(raw: &str) -> BTreeMap<String, (i64, i64)> {
+    let mut snapshot = BTreeMap::new();
+    for line in raw.lines() {
+        let parts = line.split('\t').collect::<Vec<_>>();
+        if parts.len() < 3 {
+            continue;
+        }
+        let added = parse_numstat_value(parts[0]);
+        let deleted = parse_numstat_value(parts[1]);
+        let path = parts[2].trim();
+        if path.is_empty() {
+            continue;
+        }
+        snapshot.insert(path.to_string(), (added, deleted));
+    }
+    snapshot
+}
+
+fn parse_numstat_value(raw: &str) -> i64 {
+    raw.trim().parse::<i64>().unwrap_or(0)
+}
+
+fn build_cycle_diff_summary(
+    baseline: Option<&BTreeMap<String, (i64, i64)>>,
+    current: &BTreeMap<String, (i64, i64)>,
+) -> CycleDiffSummary {
+    let mut summary = CycleDiffSummary::default();
+    let mut union_keys = baseline
+        .map(|map| map.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    union_keys.extend(current.keys().cloned());
+
+    for key in union_keys {
+        let (base_added, base_deleted) = baseline
+            .and_then(|m| m.get(&key).copied())
+            .unwrap_or((0, 0));
+        let (current_added, current_deleted) = current.get(&key).copied().unwrap_or((0, 0));
+        let delta_added = current_added - base_added;
+        let delta_deleted = current_deleted - base_deleted;
+        if delta_added == 0 && delta_deleted == 0 {
+            continue;
+        }
+        summary.total_added += delta_added;
+        summary.total_deleted += delta_deleted;
+        summary.changed_files.push(CycleDiffFileDelta {
+            path: key,
+            added: delta_added,
+            deleted: delta_deleted,
+        });
+    }
+
+    summary
+        .changed_files
+        .sort_by(|a, b| (b.added.abs() + b.deleted.abs()).cmp(&(a.added.abs() + a.deleted.abs())));
+    summary
+}
+
+fn parse_verify_status_counts(content: &str) -> (usize, usize) {
+    let pass = content.matches("Status: PASS").count();
+    let fail = content.matches("Status: FAIL").count();
+    (pass, fail)
 }
 
 fn print_inline_status(message: &str) {
@@ -624,11 +1321,14 @@ async fn process_exists(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_writer_lock_if_matches, detect_limit_reached_cli_agent, lock_id_for_pid, parse_lock_pid,
-        process_exists, release_writer_lock_for_pid,
+        build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
+        lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid, parse_spec_bootstrap_response,
+        parse_task_breakdown_response, parse_verify_status_counts, process_exists,
+        release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
     };
     use crate::agent::AgentKind;
     use crate::core::{agent_workspace, status::StatusFile};
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn sample_status_with_writer(writer: &str) -> String {
@@ -728,5 +1428,151 @@ mod tests {
     #[tokio::test]
     async fn process_exists_detects_current_process() {
         assert!(process_exists(std::process::id()).await);
+    }
+
+    #[test]
+    fn parse_spec_bootstrap_response_extracts_json_and_tasks() {
+        let response = r#"
+```json
+{
+  "goal_summary": "Implement todo library",
+  "acceptance_criteria": ["Create task", "List tasks"],
+  "verification_commands": ["cargo test"],
+  "ambiguities": ["Persistence format is unspecified"]
+}
+```
+
+| ID | Title | State | Owner | Evidence | Notes |
+|---|---|---|---|---|---|
+| T1 | Add create API | todo | implementer | | from spec |
+| T2 | Add list API | todo | implementer | | from spec |
+"#;
+
+        let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
+        assert_eq!(parsed.goal_summary, "Implement todo library");
+        assert_eq!(parsed.acceptance_criteria.len(), 2);
+        assert_eq!(parsed.verification_commands, vec!["cargo test"]);
+        assert_eq!(parsed.ambiguities.len(), 1);
+        assert_eq!(parsed.tasks.len(), 2);
+        assert_eq!(parsed.tasks[0].id, "T1");
+    }
+
+    #[test]
+    fn parse_git_numstat_snapshot_reads_numstat_lines() {
+        let raw = "10\t2\tsrc/main.rs\n3\t1\tREADME.md\n";
+        let parsed = parse_git_numstat_snapshot(raw);
+        assert_eq!(parsed.get("src/main.rs"), Some(&(10, 2)));
+        assert_eq!(parsed.get("README.md"), Some(&(3, 1)));
+    }
+
+    #[test]
+    fn build_cycle_diff_summary_computes_delta_from_baseline() {
+        let mut baseline = BTreeMap::new();
+        baseline.insert("src/main.rs".to_string(), (10, 2));
+        let mut current = BTreeMap::new();
+        current.insert("src/main.rs".to_string(), (13, 5));
+        current.insert("src/lib.rs".to_string(), (4, 0));
+
+        let summary = build_cycle_diff_summary(Some(&baseline), &current);
+        assert_eq!(summary.total_added, 7);
+        assert_eq!(summary.total_deleted, 3);
+        assert_eq!(summary.changed_files.len(), 2);
+    }
+
+    #[test]
+    fn parse_verify_status_counts_counts_pass_and_fail() {
+        let content = "Status: PASS\nStatus: FAIL\nStatus: PASS\n";
+        let (pass, fail) = parse_verify_status_counts(content);
+        assert_eq!(pass, 2);
+        assert_eq!(fail, 1);
+    }
+
+    #[test]
+    fn resolve_bootstrap_request_defaults_to_goal_when_tasks_missing() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let status = StatusFile::from_str(&sample_status_with_writer("null"))
+            .expect("status should parse");
+
+        let request = resolve_bootstrap_request(temp.path(), &status, None)
+            .expect("should resolve")
+            .expect("bootstrap should be enabled");
+        assert_eq!(request.mode, SpecBootstrapMode::TaskOnly);
+        assert!(request.source_path.ends_with("goal.md"));
+    }
+
+    #[test]
+    fn resolve_bootstrap_request_uses_fullsync_when_spec_is_provided() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let status = StatusFile::from_str(&sample_status_with_writer("null"))
+            .expect("status should parse");
+
+        let request = resolve_bootstrap_request(
+            temp.path(),
+            &status,
+            Some(std::path::Path::new("requirements.md")),
+        )
+        .expect("should resolve")
+        .expect("bootstrap should be enabled");
+        assert_eq!(request.mode, SpecBootstrapMode::FullSync);
+        assert!(request.source_path.ends_with("requirements.md"));
+    }
+
+    #[test]
+    fn resolve_bootstrap_request_skips_when_tasks_exist() {
+        let status_with_tasks = "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 0\nphase: briefing\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: null\n  active_task: null\n---\n\n## Task Table\n\n| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Setup | todo | implementer | | |\n";
+        let status = StatusFile::from_str(status_with_tasks).expect("status should parse");
+        let temp = TempDir::new().expect("temp dir should be created");
+        let request = resolve_bootstrap_request(temp.path(), &status, None)
+            .expect("should resolve");
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn parse_task_breakdown_response_falls_back_to_criteria() {
+        let tasks = parse_task_breakdown_response("no table here", &["criterion a".to_string()])
+            .expect("fallback should build tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "T1");
+    }
+
+    #[test]
+    fn parse_task_breakdown_response_uses_table_when_present() {
+        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | todo | implementer | | |\n";
+        let tasks = parse_task_breakdown_response(response, &[])
+            .expect("should parse table");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Implement API");
+    }
+
+    #[test]
+    fn parse_task_breakdown_response_errors_when_no_table_and_no_fallback() {
+        let err = parse_task_breakdown_response("no table here", &[])
+            .expect_err("should fail");
+        assert!(err
+            .to_string()
+            .contains("did not contain a valid task table"));
+    }
+
+    #[test]
+    fn parse_spec_bootstrap_response_uses_criteria_for_tasks_when_table_missing() {
+        let response = r#"
+```json
+{
+  "goal_summary": "Implement todo library",
+  "acceptance_criteria": ["Create task", "Create task", "List tasks"],
+  "verification_commands": ["cargo test"],
+  "ambiguities": []
+}
+```
+"#;
+
+        let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
+        assert_eq!(
+            parsed.acceptance_criteria,
+            vec!["Create task".to_string(), "List tasks".to_string()]
+        );
+        assert_eq!(parsed.tasks.len(), 2);
+        assert_eq!(parsed.tasks[0].id, "T1");
+        assert_eq!(parsed.tasks[1].id, "T2");
     }
 }
