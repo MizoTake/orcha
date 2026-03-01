@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
@@ -171,6 +172,7 @@ impl Agent for LocalCliAgent {
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to start CLI '{}': {}", self.command, e))?;
+        let child_pid = child.id();
 
         if self.prompt_via_stdin {
             if let Some(mut stdin) = child.stdin.take() {
@@ -181,10 +183,14 @@ impl Agent for LocalCliAgent {
             }
         }
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed waiting for CLI '{}': {}", self.command, e))?;
+        let output = wait_with_output_and_heartbeat(
+            child,
+            &self.command,
+            child_pid,
+            self.prompt_via_stdin,
+            &self.model,
+        )
+        .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -217,6 +223,60 @@ impl Agent for LocalCliAgent {
 
     fn kind(&self) -> AgentKind {
         self.agent_kind
+    }
+}
+
+async fn wait_with_output_and_heartbeat(
+    child: tokio::process::Child,
+    command: &str,
+    child_pid: Option<u32>,
+    prompt_via_stdin: bool,
+    model: &str,
+) -> anyhow::Result<std::process::Output> {
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+    let pid = child_pid
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let prompt_mode = if prompt_via_stdin { "stdin" } else { "arg" };
+    let model_name = if model.trim().is_empty() {
+        "(default)"
+    } else {
+        model
+    };
+
+    println!(
+        "  ... local CLI start: command='{}' pid={} prompt_mode={} model={}",
+        command, pid, prompt_mode, model_name
+    );
+
+    let started_at = Instant::now();
+    let mut wait_future = Box::pin(child.wait_with_output());
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+
+    loop {
+        tokio::select! {
+            output = &mut wait_future => {
+                let output = output.map_err(|e| anyhow::anyhow!("Failed waiting for CLI '{}': {}", command, e))?;
+                println!(
+                    "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?}",
+                    command,
+                    pid,
+                    started_at.elapsed().as_secs(),
+                    output.status.code()
+                );
+                return Ok(output);
+            }
+            _ = heartbeat.tick() => {
+                println!(
+                    "  ... local CLI waiting: command='{}' pid={} elapsed={}s",
+                    command,
+                    pid,
+                    started_at.elapsed().as_secs()
+                );
+            }
+        }
     }
 }
 

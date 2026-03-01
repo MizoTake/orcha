@@ -339,7 +339,7 @@ fn default_local_llm_endpoint() -> String {
 }
 
 fn default_prompt_via_stdin() -> bool {
-    true
+    false
 }
 
 fn default_ensure_no_permission_flags() -> bool {
@@ -432,6 +432,12 @@ execution:
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
         assert!(!cfg.agents.local_llm.cli.ensure_no_permission_flags);
+    }
+
+    #[test]
+    fn default_prompt_delivery_uses_args_not_stdin() {
+        let cfg = MachineConfig::default();
+        assert!(!cfg.agents.local_llm.cli.prompt_via_stdin);
     }
 
     #[test]
