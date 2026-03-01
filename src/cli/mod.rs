@@ -15,7 +15,11 @@ pub struct Cli {
     pub command: Command,
 
     /// Path to .orcha directory
-    #[arg(long, global = true, default_value = ".orcha")]
+    #[arg(
+        long = "orcha-dir",
+        global = true,
+        default_value = ".orcha"
+    )]
     pub orch_dir: PathBuf,
 
     /// Enable verbose logging
