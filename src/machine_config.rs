@@ -566,7 +566,7 @@ execution:
     }
 
     #[test]
-    fn parse_execution_profile_with_legacy_swapped_alias() {
+    fn parse_execution_profile_rejects_legacy_swapped_alias() {
         let yml = r#"
 version: 1
 agents: {}
@@ -577,11 +577,7 @@ execution:
     commands: []
 "#;
 
-        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(
-            cfg.execution.profile,
-            Some(ProfileName::ClaudeImplOpencodeReview)
-        );
+        assert!(serde_yaml::from_str::<MachineConfig>(yml).is_err());
     }
 
     #[test]
@@ -604,7 +600,7 @@ execution:
     }
 
     #[test]
-    fn parse_execution_profile_with_legacy_opencode_alias() {
+    fn parse_execution_profile_rejects_legacy_opencode_alias() {
         let yml = r#"
 version: 1
 agents: {}
@@ -615,11 +611,7 @@ execution:
     commands: []
 "#;
 
-        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(
-            cfg.execution.profile,
-            Some(ProfileName::OpencodeImplClaudeReview)
-        );
+        assert!(serde_yaml::from_str::<MachineConfig>(yml).is_err());
     }
 
     #[test]

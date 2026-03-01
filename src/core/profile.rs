@@ -9,15 +9,10 @@ pub enum ProfileName {
     CheapCheckpoints,
     QualityGate,
     UnblockFirst,
-    #[serde(alias = "opencode_only")]
     OpencodeImplNoReview,
-    #[serde(alias = "opencode_claude")]
     OpencodeImplClaudeReview,
-    #[serde(alias = "opencode_codex")]
     OpencodeImplCodexReview,
-    #[serde(alias = "opencode_claude_swapped")]
     ClaudeImplOpencodeReview,
-    #[serde(alias = "opencode_codex_swapped")]
     CodexImplOpencodeReview,
     CodexReview,
 }
@@ -30,15 +25,10 @@ impl ProfileName {
             "quality_gate" => Some(ProfileName::QualityGate),
             "unblock_first" => Some(ProfileName::UnblockFirst),
             "opencode_impl_no_review" => Some(ProfileName::OpencodeImplNoReview),
-            "opencode_only" => Some(ProfileName::OpencodeImplNoReview),
             "opencode_impl_claude_review" => Some(ProfileName::OpencodeImplClaudeReview),
-            "opencode_claude" => Some(ProfileName::OpencodeImplClaudeReview),
             "opencode_impl_codex_review" => Some(ProfileName::OpencodeImplCodexReview),
-            "opencode_codex" => Some(ProfileName::OpencodeImplCodexReview),
             "claude_impl_opencode_review" => Some(ProfileName::ClaudeImplOpencodeReview),
-            "opencode_claude_swapped" => Some(ProfileName::ClaudeImplOpencodeReview),
             "codex_impl_opencode_review" => Some(ProfileName::CodexImplOpencodeReview),
-            "opencode_codex_swapped" => Some(ProfileName::CodexImplOpencodeReview),
             "codex_review" => Some(ProfileName::CodexReview),
             _ => None,
         }
@@ -250,17 +240,21 @@ mod tests {
     use super::{AgentPreference, ProfileName, ProfileRules};
 
     #[test]
-    fn from_str_accepts_opencode_custom_profiles() {
+    fn from_str_accepts_current_opencode_custom_profiles() {
         assert!(ProfileName::from_str("opencode_impl_no_review").is_some());
         assert!(ProfileName::from_str("opencode_impl_claude_review").is_some());
         assert!(ProfileName::from_str("opencode_impl_codex_review").is_some());
-        assert!(ProfileName::from_str("opencode_only").is_some());
-        assert!(ProfileName::from_str("opencode_claude").is_some());
-        assert!(ProfileName::from_str("opencode_codex").is_some());
         assert!(ProfileName::from_str("claude_impl_opencode_review").is_some());
         assert!(ProfileName::from_str("codex_impl_opencode_review").is_some());
-        assert!(ProfileName::from_str("opencode_claude_swapped").is_some());
-        assert!(ProfileName::from_str("opencode_codex_swapped").is_some());
+    }
+
+    #[test]
+    fn from_str_rejects_legacy_opencode_profile_names() {
+        assert!(ProfileName::from_str("opencode_only").is_none());
+        assert!(ProfileName::from_str("opencode_claude").is_none());
+        assert!(ProfileName::from_str("opencode_codex").is_none());
+        assert!(ProfileName::from_str("opencode_claude_swapped").is_none());
+        assert!(ProfileName::from_str("opencode_codex_swapped").is_none());
     }
 
     #[test]
