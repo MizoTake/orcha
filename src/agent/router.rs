@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::agent::backend::anthropic::AnthropicAgent;
 use crate::agent::backend::codex::CodexAgent;
@@ -38,7 +39,11 @@ impl Default for GateContext {
 }
 
 impl AgentRouter {
-    pub fn new(config: &AppConfig, rules: &ProfileRules) -> anyhow::Result<Self> {
+    pub fn new(
+        config: &AppConfig,
+        rules: &ProfileRules,
+        disabled_agents: &HashSet<AgentKind>,
+    ) -> anyhow::Result<Self> {
         let mut agents: HashMap<AgentKind, Box<dyn Agent>> = HashMap::new();
 
         // Local LLM backend selection
@@ -49,57 +54,63 @@ impl AgentRouter {
         agents.insert(AgentKind::LocalLlm, local_agent);
 
         // Claude (Anthropic)
-        match config.anthropic_mode {
-            ProviderMode::Cli => {
-                let agent = LocalCliAgent::from_cli_config(
-                    &config.anthropic_cli,
-                    &config.anthropic_model,
-                    AgentKind::Claude,
-                )?;
-                agents.insert(AgentKind::Claude, Box::new(agent));
-            }
-            ProviderMode::Http => {
-                if config.has_anthropic() {
-                    if let Ok(agent) = AnthropicAgent::new(config) {
-                        agents.insert(AgentKind::Claude, Box::new(agent));
+        if !disabled_agents.contains(&AgentKind::Claude) {
+            match config.anthropic_mode {
+                ProviderMode::Cli => {
+                    let agent = LocalCliAgent::from_cli_config(
+                        &config.anthropic_cli,
+                        &config.anthropic_model,
+                        AgentKind::Claude,
+                    )?;
+                    agents.insert(AgentKind::Claude, Box::new(agent));
+                }
+                ProviderMode::Http => {
+                    if config.has_anthropic() {
+                        if let Ok(agent) = AnthropicAgent::new(config) {
+                            agents.insert(AgentKind::Claude, Box::new(agent));
+                        }
                     }
                 }
             }
         }
 
         // Gemini
-        match config.gemini_mode {
-            ProviderMode::Cli => {
-                let agent = LocalCliAgent::from_cli_config(
-                    &config.gemini_cli,
-                    &config.gemini_model,
-                    AgentKind::Gemini,
-                )?;
-                agents.insert(AgentKind::Gemini, Box::new(agent));
-            }
-            ProviderMode::Http => {
-                if config.has_gemini() {
-                    if let Ok(agent) = GeminiAgent::new(config) {
-                        agents.insert(AgentKind::Gemini, Box::new(agent));
+        if !disabled_agents.contains(&AgentKind::Gemini) {
+            match config.gemini_mode {
+                ProviderMode::Cli => {
+                    let agent = LocalCliAgent::from_cli_config(
+                        &config.gemini_cli,
+                        &config.gemini_model,
+                        AgentKind::Gemini,
+                    )?;
+                    agents.insert(AgentKind::Gemini, Box::new(agent));
+                }
+                ProviderMode::Http => {
+                    if config.has_gemini() {
+                        if let Ok(agent) = GeminiAgent::new(config) {
+                            agents.insert(AgentKind::Gemini, Box::new(agent));
+                        }
                     }
                 }
             }
         }
 
         // Codex (OpenAI)
-        match config.openai_mode {
-            ProviderMode::Cli => {
-                let agent = LocalCliAgent::from_cli_config(
-                    &config.openai_cli,
-                    &config.codex_model,
-                    AgentKind::Codex,
-                )?;
-                agents.insert(AgentKind::Codex, Box::new(agent));
-            }
-            ProviderMode::Http => {
-                if config.has_openai() {
-                    if let Ok(agent) = CodexAgent::new(config) {
-                        agents.insert(AgentKind::Codex, Box::new(agent));
+        if !disabled_agents.contains(&AgentKind::Codex) {
+            match config.openai_mode {
+                ProviderMode::Cli => {
+                    let agent = LocalCliAgent::from_cli_config(
+                        &config.openai_cli,
+                        &config.codex_model,
+                        AgentKind::Codex,
+                    )?;
+                    agents.insert(AgentKind::Codex, Box::new(agent));
+                }
+                ProviderMode::Http => {
+                    if config.has_openai() {
+                        if let Ok(agent) = CodexAgent::new(config) {
+                            agents.insert(AgentKind::Codex, Box::new(agent));
+                        }
                     }
                 }
             }
@@ -157,13 +168,15 @@ impl AgentRouter {
 
         // 5. Fall back to default
         self.get_by_preference(self.profile_rules.default_agent)
-            .expect("default agent (local_llm) must always be available")
+            .or_else(|| self.agents.get(&AgentKind::LocalLlm).map(|a| a.as_ref()))
+            .expect("local_llm must always be available")
     }
 
     /// Get the default agent (for phases that don't need gate checks).
     pub fn default_agent(&self) -> &dyn Agent {
         self.get_by_preference(self.profile_rules.default_agent)
-            .expect("default agent must always be available")
+            .or_else(|| self.agents.get(&AgentKind::LocalLlm).map(|a| a.as_ref()))
+            .expect("local_llm must always be available")
     }
 
     fn get_by_preference(&self, pref: AgentPreference) -> Option<&dyn Agent> {

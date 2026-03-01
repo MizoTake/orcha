@@ -103,6 +103,7 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 * `execution.profile_strategy.alternating`
 * `execution.profile_strategy.every_n_cycles`
 * `execution.profile_strategy.mixins` (`fields`: `default_agent` / `review_agent` / `escalation` / `security_gate` / `size_gate`)
+* `execution.cli_limit.disable_agent_on_limit` (既定 `true`。`true` で claude/codex CLI が limit/quota エラー後に同一 run 中で無効化)
 * `execution.acceptance_criteria`
 * `execution.verification.commands`
 

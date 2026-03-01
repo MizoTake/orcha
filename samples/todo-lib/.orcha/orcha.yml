@@ -53,6 +53,8 @@ execution:
       - "opencode_impl_no_review"
     every_n_cycles: []
     mixins: []
+  cli_limit:
+    disable_agent_on_limit: true
   acceptance_criteria:
     - "`TodoList::add` assigns incremental IDs starting from `1`."
     - "`TodoList::complete` marks the target item as done and returns `false` for unknown IDs."

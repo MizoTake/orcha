@@ -84,9 +84,17 @@ pub struct ExecutionConfig {
     #[serde(default)]
     pub profile_strategy: ProfileStrategyConfig,
     #[serde(default)]
+    pub cli_limit: CliLimitConfig,
+    #[serde(default)]
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub verification: VerificationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliLimitConfig {
+    #[serde(default = "default_disable_agent_on_limit")]
+    pub disable_agent_on_limit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -299,8 +307,17 @@ impl Default for ExecutionConfig {
         Self {
             profile: None,
             profile_strategy: ProfileStrategyConfig::default(),
+            cli_limit: CliLimitConfig::default(),
             acceptance_criteria: vec!["Criterion 1".to_string(), "Criterion 2".to_string()],
             verification: VerificationConfig::default(),
+        }
+    }
+}
+
+impl Default for CliLimitConfig {
+    fn default() -> Self {
+        Self {
+            disable_agent_on_limit: default_disable_agent_on_limit(),
         }
     }
 }
@@ -326,6 +343,10 @@ fn default_prompt_via_stdin() -> bool {
 }
 
 fn default_ensure_no_permission_flags() -> bool {
+    true
+}
+
+fn default_disable_agent_on_limit() -> bool {
     true
 }
 
@@ -612,6 +633,64 @@ execution:
 "#;
 
         assert!(serde_yaml::from_str::<MachineConfig>(yml).is_err());
+    }
+
+    #[test]
+    fn parse_execution_cli_limit_option() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: cheap_checkpoints
+  cli_limit:
+    disable_agent_on_limit: true
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert!(cfg.execution.cli_limit.disable_agent_on_limit);
+    }
+
+    #[test]
+    fn default_execution_cli_limit_is_enabled() {
+        let cfg = MachineConfig::default();
+        assert!(cfg.execution.cli_limit.disable_agent_on_limit);
+    }
+
+    #[test]
+    fn parse_execution_cli_limit_defaults_to_enabled_when_missing() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: cheap_checkpoints
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert!(cfg.execution.cli_limit.disable_agent_on_limit);
+    }
+
+    #[test]
+    fn parse_execution_cli_limit_can_be_disabled_explicitly() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  profile: cheap_checkpoints
+  cli_limit:
+    disable_agent_on_limit: false
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert!(!cfg.execution.cli_limit.disable_agent_on_limit);
     }
 
     #[test]

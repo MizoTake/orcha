@@ -63,6 +63,8 @@ execution:
     alternating: []    # e.g. ["cheap_checkpoints", "quality_gate"] (cycleごとに交互切替)
     every_n_cycles: [] # e.g. [{ interval: 3, profile: "unblock_first", offset: 0 }]
     mixins: []         # e.g. [{ from: "quality_gate", fields: ["review_agent", "security_gate"] }]
+  cli_limit:
+    disable_agent_on_limit: true # true: claude/codex CLI が limit/quota エラー時にその run 中は無効化
   acceptance_criteria:
     - "Criterion 1"
     - "Criterion 2"
