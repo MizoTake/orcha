@@ -25,7 +25,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize .orcha/ directory with templates
+    /// Initialize .orcha/ directory
     Init,
 
     /// Execute cycles until goal is done or a stop condition is reached
@@ -36,7 +36,7 @@ pub enum Command {
 
     /// Change active profile
     Profile {
-        /// Profile name: local_only, cheap_checkpoints, quality_gate, unblock_first
+        /// Profile name: local_only, cheap_checkpoints, quality_gate, unblock_first, opencode_only, opencode_claude, opencode_codex
         name: String,
     },
 

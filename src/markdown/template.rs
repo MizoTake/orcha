@@ -39,27 +39,26 @@ pub fn orcha_yml() -> &'static str {
 
 agents:
   local_llm:
-    mode: "http" # http | cli
-    endpoint: "http://localhost:11434/v1"
-    model: "llama3.2"
+    mode: "cli" # http | cli
+    model: null         # optional, e.g. "openai/gpt-4.1"
     cli:
-      command: ""        # e.g. "opencode", "vibe-local", "lmstudio"
-      args: []           # e.g. ["chat", "--format", "markdown"]
-      prompt_via_stdin: true
-      model_arg: null    # e.g. "--model" (appended as: --model <model>)
+      command: "opencode-cli"
+      args: ["run"]      # e.g. ["run", "--format", "json"]
+      prompt_via_stdin: false
+      model_arg: "-m"    # appended as: -m <model>
       ensure_no_permission_flags: true # codex/claude では no-permission 向けフラグを自動付与
-  anthropic:
+  claude: # legacy alias: anthropic
     api_key_env: "ANTHROPIC_API_KEY"
     model: "claude-sonnet-4-20250514"
   gemini:
     api_key_env: "GEMINI_API_KEY"
     model: "gemini-2.0-flash"
-  openai:
+  codex: # legacy alias: openai
     api_key_env: "OPENAI_API_KEY"
     model: "gpt-4.1"
 
 execution:
-  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first
+  profile: "cheap_checkpoints" # local_only | cheap_checkpoints | quality_gate | unblock_first | opencode_only | opencode_claude | opencode_codex
   profile_strategy:
     alternating: []    # e.g. ["cheap_checkpoints", "quality_gate"] (cycleごとに交互切替)
     every_n_cycles: [] # e.g. [{ interval: 3, profile: "unblock_first", offset: 0 }]
@@ -494,5 +493,56 @@ Aggressive unblocking. Codex on first verify failure. Claude diagnosis on contin
 - **Escalation**: 1 failure → codex, continued → claude diagnosis
 - **Security gate**: Enabled
 - **Size gate**: Enabled
+"#
+}
+
+pub fn profile_opencode_only_md() -> &'static str {
+    r#"# Profile: opencode_only
+
+## Description
+
+All processing done by opencode(local_llm) only. If stuck, mark as blocked.
+
+## Rules
+
+- **Default agent**: local_llm
+- **Review agent**: local_llm
+- **Escalation**: None
+- **Security gate**: Disabled
+- **Size gate**: Disabled
+"#
+}
+
+pub fn profile_opencode_claude_md() -> &'static str {
+    r#"# Profile: opencode_claude
+
+## Description
+
+Use opencode(local_llm) by default and route review/escalation to claude.
+
+## Rules
+
+- **Default agent**: local_llm
+- **Review agent**: claude
+- **Escalation**: 2 failures → claude
+- **Security gate**: Enabled
+- **Size gate**: Enabled
+"#
+}
+
+pub fn profile_opencode_codex_md() -> &'static str {
+    r#"# Profile: opencode_codex
+
+## Description
+
+Use opencode(local_llm) by default and route review/escalation to codex.
+
+## Rules
+
+- **Default agent**: local_llm
+- **Review agent**: codex
+- **Escalation**: 2 failures → codex
+- **Security gate**: Disabled
+- **Size gate**: Disabled
 "#
 }

@@ -9,6 +9,7 @@ use crate::core::gate;
 use crate::core::health::Health;
 use crate::core::status::StatusFile;
 use crate::machine_config::MachineConfig;
+use crate::machine_config::ProviderMode;
 
 /// Execute `orcha explain`: show current decision reasoning.
 pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
@@ -93,7 +94,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     println!("  local_llm: always available");
     println!(
         "  claude:    {}",
-        if config.has_anthropic() {
+        if matches!(config.anthropic_mode, ProviderMode::Cli) {
+            "available (CLI mode)".green().to_string()
+        } else if config.has_anthropic() {
             "available (API key set)".green().to_string()
         } else {
             "not configured".red().to_string()
@@ -101,7 +104,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     );
     println!(
         "  gemini:    {}",
-        if config.has_gemini() {
+        if matches!(config.gemini_mode, ProviderMode::Cli) {
+            "available (CLI mode)".green().to_string()
+        } else if config.has_gemini() {
             "available (API key set)".green().to_string()
         } else {
             "not configured".red().to_string()
@@ -109,7 +114,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     );
     println!(
         "  codex:     {}",
-        if config.has_openai() {
+        if matches!(config.openai_mode, ProviderMode::Cli) {
+            "available (CLI mode)".green().to_string()
+        } else if config.has_openai() {
             "available (API key set)".green().to_string()
         } else {
             "not configured".red().to_string()

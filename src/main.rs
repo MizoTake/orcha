@@ -2,6 +2,7 @@ use clap::Parser;
 
 use orcha::cli::{Cli, Command};
 use orcha::core::error::OrchaError;
+use orcha::core::profile::ProfileName;
 
 #[tokio::main]
 async fn main() {
@@ -29,8 +30,14 @@ async fn main() {
                     eprintln!("Hint: Set the API key environment variable for {}.", agent);
                 }
                 OrchaError::UnknownProfile { .. } => {
+                    let available = ProfileName::all()
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     eprintln!(
-                        "Available profiles: local_only, cheap_checkpoints, quality_gate, unblock_first"
+                        "Available profiles: {}",
+                        available
                     );
                 }
                 OrchaError::MachineConfigError { .. } => {

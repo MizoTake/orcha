@@ -53,20 +53,20 @@ impl AppConfig {
             local_llm_model,
             local_llm_cli,
 
-            anthropic_api_key: env_api_key(&machine.agents.anthropic.api_key_env),
-            anthropic_model: machine.agents.anthropic.model.clone(),
-            anthropic_mode: machine.agents.anthropic.mode.clone(),
-            anthropic_cli: machine.agents.anthropic.cli.clone(),
+            anthropic_api_key: env_api_key(&machine.agents.claude.api_key_env),
+            anthropic_model: machine.agents.claude.model.clone(),
+            anthropic_mode: machine.agents.claude.mode.clone(),
+            anthropic_cli: machine.agents.claude.cli.clone(),
 
             gemini_api_key: env_api_key(&machine.agents.gemini.api_key_env),
             gemini_model: machine.agents.gemini.model.clone(),
             gemini_mode: machine.agents.gemini.mode.clone(),
             gemini_cli: machine.agents.gemini.cli.clone(),
 
-            openai_api_key: env_api_key(&machine.agents.openai.api_key_env),
-            codex_model: machine.agents.openai.model.clone(),
-            openai_mode: machine.agents.openai.mode.clone(),
-            openai_cli: machine.agents.openai.cli.clone(),
+            openai_api_key: env_api_key(&machine.agents.codex.api_key_env),
+            codex_model: machine.agents.codex.model.clone(),
+            openai_mode: machine.agents.codex.mode.clone(),
+            openai_cli: machine.agents.codex.cli.clone(),
         })
     }
 

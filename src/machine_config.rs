@@ -20,12 +20,12 @@ pub struct MachineConfig {
 pub struct AgentsConfig {
     #[serde(default)]
     pub local_llm: LocalLlmConfig,
-    #[serde(default)]
-    pub anthropic: ProviderConfig,
+    #[serde(default, alias = "anthropic")]
+    pub claude: ProviderConfig,
     #[serde(default)]
     pub gemini: ProviderConfig,
-    #[serde(default)]
-    pub openai: ProviderConfig,
+    #[serde(default, alias = "openai")]
+    pub codex: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,7 +238,7 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             local_llm: LocalLlmConfig::default(),
-            anthropic: ProviderConfig {
+            claude: ProviderConfig {
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 model: "claude-sonnet-4-20250514".to_string(),
                 mode: ProviderMode::Http,
@@ -250,7 +250,7 @@ impl Default for AgentsConfig {
                 mode: ProviderMode::Http,
                 cli: LocalLlmCliConfig::default(),
             },
-            openai: ProviderConfig {
+            codex: ProviderConfig {
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 model: "gpt-4.1".to_string(),
                 mode: ProviderMode::Http,
@@ -414,11 +414,11 @@ execution:
     }
 
     #[test]
-    fn parse_cli_mode_for_anthropic_provider() {
+    fn parse_cli_mode_for_claude_provider() {
         let yml = r#"
 version: 1
 agents:
-  anthropic:
+  claude:
     mode: cli
     model: claude-sonnet-4-20250514
     cli:
@@ -433,22 +433,22 @@ execution:
 "#;
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(cfg.agents.anthropic.mode, ProviderMode::Cli);
-        assert_eq!(cfg.agents.anthropic.cli.command, "claude");
-        assert!(!cfg.agents.anthropic.cli.prompt_via_stdin);
+        assert_eq!(cfg.agents.claude.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.claude.cli.command, "claude");
+        assert!(!cfg.agents.claude.cli.prompt_via_stdin);
         assert_eq!(
-            cfg.agents.anthropic.cli.model_arg.as_deref(),
+            cfg.agents.claude.cli.model_arg.as_deref(),
             Some("--model")
         );
-        assert_eq!(cfg.agents.anthropic.model, "claude-sonnet-4-20250514");
+        assert_eq!(cfg.agents.claude.model, "claude-sonnet-4-20250514");
     }
 
     #[test]
-    fn parse_cli_mode_for_openai_provider() {
+    fn parse_cli_mode_for_codex_provider() {
         let yml = r#"
 version: 1
 agents:
-  openai:
+  codex:
     mode: cli
     model: codex
     cli:
@@ -463,10 +463,10 @@ execution:
 "#;
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(cfg.agents.openai.mode, ProviderMode::Cli);
-        assert_eq!(cfg.agents.openai.cli.command, "codex");
-        assert!(!cfg.agents.openai.cli.ensure_no_permission_flags);
-        assert_eq!(cfg.agents.openai.model, "codex");
+        assert_eq!(cfg.agents.codex.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.codex.cli.command, "codex");
+        assert!(!cfg.agents.codex.cli.ensure_no_permission_flags);
+        assert_eq!(cfg.agents.codex.model, "codex");
     }
 
     #[test]
@@ -474,7 +474,7 @@ execution:
         let yml = r#"
 version: 1
 agents:
-  anthropic:
+  claude:
     api_key_env: ANTHROPIC_API_KEY
     model: claude-sonnet-4-20250514
 execution:
@@ -484,8 +484,50 @@ execution:
 "#;
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
-        assert_eq!(cfg.agents.anthropic.mode, ProviderMode::Http);
-        assert!(cfg.agents.anthropic.cli.command.is_empty());
+        assert_eq!(cfg.agents.claude.mode, ProviderMode::Http);
+        assert!(cfg.agents.claude.cli.command.is_empty());
+    }
+
+    #[test]
+    fn legacy_anthropic_key_maps_to_claude() {
+        let yml = r#"
+version: 1
+agents:
+  anthropic:
+    mode: cli
+    model: claude-sonnet-4-20250514
+    cli:
+      command: claude
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.agents.claude.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.claude.cli.command, "claude");
+    }
+
+    #[test]
+    fn legacy_openai_key_maps_to_codex() {
+        let yml = r#"
+version: 1
+agents:
+  openai:
+    mode: cli
+    model: codex
+    cli:
+      command: codex
+execution:
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.agents.codex.mode, ProviderMode::Cli);
+        assert_eq!(cfg.agents.codex.cli.command, "codex");
     }
 
     #[test]
