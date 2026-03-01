@@ -46,7 +46,7 @@ agents:
       args: ["run"]      # e.g. ["run", "--format", "json"]
       prompt_via_stdin: false
       model_arg: "-m"    # appended as: -m <model>
-      ensure_no_permission_flags: true # codex/claude では no-permission 向けフラグを自動付与
+      ensure_no_permission_flags: true # codex/claude は no-permission 向けフラグ、opencode は OPENCODE_PERMISSION を自動付与
   claude: # legacy alias: anthropic
     api_key_env: "ANTHROPIC_API_KEY"
     model: "claude-sonnet-4-20250514"

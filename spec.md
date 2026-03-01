@@ -111,6 +111,7 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 
 * `command=codex` では `--ask-for-approval never` を自動付与（未指定時）
 * `command=claude` 系では `--dangerously-skip-permissions` を自動付与（未指定時）
+* `command=opencode` では `OPENCODE_PERMISSION={"*":"allow","doom_loop":"allow"}` を自動付与
 
 プロファイル戦略例:
 

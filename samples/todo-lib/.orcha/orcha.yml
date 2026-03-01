@@ -6,7 +6,7 @@ agents:
     model: "qwen/qwen3-30b-a3b-2507"
     cli:
       command: "opencode-cli"
-      args: ["run"]
+      args: ["run", "--thinking"]
       prompt_via_stdin: true
       model_arg: "-m"
       ensure_no_permission_flags: true

@@ -4,8 +4,9 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 use crate::agent::{Agent, AgentContext, AgentKind, AgentResponse};
 use crate::config::AppConfig;
@@ -18,6 +19,7 @@ pub struct LocalCliAgent {
     model: String,
     model_arg: Option<String>,
     prompt_via_stdin: bool,
+    ensure_no_permission_flags: bool,
     agent_kind: AgentKind,
 }
 
@@ -39,6 +41,7 @@ impl LocalCliAgent {
             model: model.to_string(),
             model_arg: cli.model_arg.clone(),
             prompt_via_stdin: cli.prompt_via_stdin,
+            ensure_no_permission_flags: cli.ensure_no_permission_flags,
             agent_kind: kind,
         })
     }
@@ -98,6 +101,16 @@ fn is_opencode_command(command_name: &str) -> bool {
     command_name == "opencode" || command_name == "opencode-cli"
 }
 
+const OPENCODE_PERMISSION_ALLOW_ALL: &str = r#"{"*":"allow","doom_loop":"allow"}"#;
+
+fn opencode_permission_env_value(command_name: &str, enabled: bool) -> Option<&'static str> {
+    if enabled && is_opencode_command(command_name) {
+        Some(OPENCODE_PERMISSION_ALLOW_ALL)
+    } else {
+        None
+    }
+}
+
 fn ensure_codex_no_permission_args(args: &mut Vec<String>) {
     let has_dangerous = args.iter().any(|arg| {
         arg.eq_ignore_ascii_case("--dangerously-bypass-approvals-and-sandbox")
@@ -137,14 +150,50 @@ fn has_flag_value(args: &[String], flag: &str, value: &str) -> bool {
     })
 }
 
+fn is_false_like(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+fn has_enabled_thinking_flag(args: &[String]) -> bool {
+    for (idx, arg) in args.iter().enumerate() {
+        if arg.eq_ignore_ascii_case("--thinking") {
+            if let Some(next) = args.get(idx + 1) {
+                if is_false_like(next) {
+                    continue;
+                }
+            }
+            return true;
+        }
+
+        if let Some((flag, value)) = arg.split_once('=') {
+            if flag.eq_ignore_ascii_case("--thinking") {
+                return !is_false_like(value);
+            }
+        }
+    }
+
+    false
+}
+
 #[async_trait]
 impl Agent for LocalCliAgent {
     async fn respond(&self, context: &AgentContext) -> anyhow::Result<AgentResponse> {
         let prompt = self.build_prompt(context);
         let request_preview = summarize_request(&context.instruction, 120);
+        let command_name = normalize_command_name(&self.command);
+        let thinking_enabled =
+            is_opencode_command(&command_name) && has_enabled_thinking_flag(&self.args);
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&self.args);
+        if let Some(permission) =
+            opencode_permission_env_value(&command_name, self.ensure_no_permission_flags)
+        {
+            cmd.env("OPENCODE_PERMISSION", permission);
+        }
         if let Some(model_arg) = &self.model_arg {
             if self.model.trim().is_empty() {
                 // When model is omitted in orcha.yml, let the CLI use its own default model.
@@ -160,7 +209,6 @@ impl Agent for LocalCliAgent {
         } else {
             // opencode run uses positional message parsing; prompts beginning with '-' can be
             // misread as options unless we terminate option parsing explicitly.
-            let command_name = normalize_command_name(&self.command);
             if is_opencode_command(&command_name) {
                 cmd.arg("--");
             }
@@ -192,6 +240,7 @@ impl Agent for LocalCliAgent {
             self.prompt_via_stdin,
             &self.model,
             &request_preview,
+            thinking_enabled,
         )
         .await?;
 
@@ -212,6 +261,22 @@ impl Agent for LocalCliAgent {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            println!(
+                "  ... local CLI stderr: {} chars preview=\"{}\"",
+                stderr.chars().count(),
+                summarize_request(&stderr, 160)
+            );
+        }
+        if !stdout.is_empty() {
+            println!(
+                "  ... local CLI response: {} chars preview=\"{}\"",
+                stdout.chars().count(),
+                summarize_request(&stdout, 160)
+            );
+        }
+
         if stdout.is_empty() {
             anyhow::bail!("Local CLI '{}' returned empty stdout", self.command);
         }
@@ -230,12 +295,13 @@ impl Agent for LocalCliAgent {
 }
 
 async fn wait_with_output_and_heartbeat(
-    child: tokio::process::Child,
+    mut child: tokio::process::Child,
     command: &str,
     child_pid: Option<u32>,
     prompt_via_stdin: bool,
     model: &str,
     request_preview: &str,
+    thinking_enabled: bool,
 ) -> anyhow::Result<std::process::Output> {
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
     let pid = child_pid
@@ -248,33 +314,44 @@ async fn wait_with_output_and_heartbeat(
         model
     };
 
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture CLI stdout for '{}'", command))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture CLI stderr for '{}'", command))?;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let stdout_task = tokio::spawn(read_stream_lines(stdout, CliStreamKind::Stdout, event_tx.clone()));
+    let stderr_task = tokio::spawn(read_stream_lines(stderr, CliStreamKind::Stderr, event_tx.clone()));
+    drop(event_tx);
+
     print_inline_status(&format!(
         "  ... local CLI start: command='{}' pid={} prompt_mode={} model={} request=\"{}\"",
         command, pid, prompt_mode, model_name, request_preview
     ));
 
     let started_at = Instant::now();
-    let mut wait_future = Box::pin(child.wait_with_output());
+    let mut wait_future = Box::pin(child.wait());
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
+    let mut status = None;
+    let mut stream_open = true;
+    let mut last_thinking = String::new();
 
-    loop {
+    while status.is_none() || stream_open {
         tokio::select! {
-            output = &mut wait_future => {
-                match output {
-                    Ok(output) => {
-                        finish_inline_status(&format!(
-                            "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?} request=\"{}\"",
-                            command,
-                            pid,
-                            started_at.elapsed().as_secs(),
-                            output.status.code(),
-                            request_preview
-                        ));
-                        return Ok(output);
+            wait_result = &mut wait_future, if status.is_none() => {
+                match wait_result {
+                    Ok(wait_status) => {
+                        status = Some(wait_status);
                     }
                     Err(e) => {
+                        stdout_task.abort();
+                        stderr_task.abort();
                         finish_inline_status(&format!(
                             "  ... local CLI wait failed: command='{}' pid={} elapsed={}s request=\"{}\"",
                             command,
@@ -286,16 +363,187 @@ async fn wait_with_output_and_heartbeat(
                     }
                 }
             }
-            _ = heartbeat.tick() => {
-                print_inline_status(&format!(
-                    "  ... local CLI waiting: command='{}' pid={} elapsed={}s request=\"{}\"",
-                    command,
-                    pid,
-                    started_at.elapsed().as_secs(),
-                    request_preview
-                ));
+            event = event_rx.recv(), if stream_open => {
+                match event {
+                    Some(event) => {
+                        if thinking_enabled && matches!(event.kind, CliStreamKind::Stdout) {
+                            if let Some(update) = extract_thinking_update(&event.line) {
+                                if update != last_thinking {
+                                    last_thinking = update;
+                                    print_inline_status(&format!(
+                                        "  ... local CLI thinking: command='{}' pid={} elapsed={}s thinking=\"{}\"",
+                                        command,
+                                        pid,
+                                        started_at.elapsed().as_secs(),
+                                        last_thinking
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        stream_open = false;
+                    }
+                }
+            }
+            _ = heartbeat.tick(), if status.is_none() => {
+                if last_thinking.is_empty() {
+                    print_inline_status(&format!(
+                        "  ... local CLI waiting: command='{}' pid={} elapsed={}s request=\"{}\"",
+                        command,
+                        pid,
+                        started_at.elapsed().as_secs(),
+                        request_preview
+                    ));
+                } else {
+                    print_inline_status(&format!(
+                        "  ... local CLI waiting: command='{}' pid={} elapsed={}s thinking=\"{}\"",
+                        command,
+                        pid,
+                        started_at.elapsed().as_secs(),
+                        last_thinking
+                    ));
+                }
             }
         }
+    }
+
+    let status = status.ok_or_else(|| anyhow::anyhow!("CLI '{}' exited without status", command))?;
+    let stdout_text = stdout_task
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to join stdout reader for '{}': {}", command, e))?
+        .map_err(|e| anyhow::anyhow!("Failed to read stdout for '{}': {}", command, e))?;
+    let stderr_text = stderr_task
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to join stderr reader for '{}': {}", command, e))?
+        .map_err(|e| anyhow::anyhow!("Failed to read stderr for '{}': {}", command, e))?;
+
+    finish_inline_status(&format!(
+        "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?} request=\"{}\"",
+        command,
+        pid,
+        started_at.elapsed().as_secs(),
+        status.code(),
+        request_preview
+    ));
+
+    Ok(std::process::Output {
+        status,
+        stdout: stdout_text.into_bytes(),
+        stderr: stderr_text.into_bytes(),
+    })
+}
+
+#[derive(Clone, Copy)]
+enum CliStreamKind {
+    Stdout,
+    Stderr,
+}
+
+struct CliStreamEvent {
+    kind: CliStreamKind,
+    line: String,
+}
+
+async fn read_stream_lines<R>(
+    reader: R,
+    kind: CliStreamKind,
+    event_tx: mpsc::UnboundedSender<CliStreamEvent>,
+) -> io::Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut collected = String::new();
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if !collected.is_empty() {
+            collected.push('\n');
+        }
+        collected.push_str(&line);
+        let _ = event_tx.send(CliStreamEvent { kind, line });
+    }
+    Ok(collected)
+}
+
+fn extract_thinking_update(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return extract_thinking_from_json(&value).map(|v| summarize_request(&v, 160));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("thinking") || lower.contains("reasoning") {
+        return Some(summarize_request(trimmed, 160));
+    }
+
+    None
+}
+
+fn extract_thinking_from_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, current) in map {
+                let key_lower = key.to_ascii_lowercase();
+                if key_lower.contains("thinking") || key_lower.contains("reasoning") {
+                    if let Some(text) = json_value_to_text(current) {
+                        if !text.is_empty() {
+                            return Some(text);
+                        }
+                    }
+                }
+            }
+
+            for current in map.values() {
+                if let Some(found) = extract_thinking_from_json(current) {
+                    return Some(found);
+                }
+            }
+
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(found) = extract_thinking_from_json(item) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn json_value_to_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let joined = items
+                .iter()
+                .filter_map(json_value_to_text)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
+        }
+        serde_json::Value::Object(map) => map
+            .get("text")
+            .and_then(json_value_to_text)
+            .or_else(|| map.get("content").and_then(json_value_to_text)),
+        _ => None,
     }
 }
 
@@ -467,6 +715,57 @@ mod tests {
         assert!(super::is_opencode_command("opencode"));
         assert!(super::is_opencode_command("opencode-cli"));
         assert!(!super::is_opencode_command("codex"));
+    }
+
+    #[test]
+    fn opencode_permission_env_is_enabled_only_for_opencode_command() {
+        assert_eq!(
+            super::opencode_permission_env_value("opencode", true),
+            Some(super::OPENCODE_PERMISSION_ALLOW_ALL)
+        );
+        assert_eq!(
+            super::opencode_permission_env_value("opencode-cli", true),
+            Some(super::OPENCODE_PERMISSION_ALLOW_ALL)
+        );
+        assert_eq!(super::opencode_permission_env_value("opencode", false), None);
+        assert_eq!(super::opencode_permission_env_value("codex", true), None);
+    }
+
+    #[test]
+    fn detects_enabled_thinking_flag_variants() {
+        assert!(super::has_enabled_thinking_flag(&["--thinking".to_string()]));
+        assert!(super::has_enabled_thinking_flag(&["--thinking=true".to_string()]));
+        assert!(super::has_enabled_thinking_flag(&["--thinking=yes".to_string()]));
+        assert!(!super::has_enabled_thinking_flag(&["--thinking=false".to_string()]));
+        assert!(!super::has_enabled_thinking_flag(&[
+            "--thinking".to_string(),
+            "false".to_string()
+        ]));
+        assert!(!super::has_enabled_thinking_flag(&[]));
+    }
+
+    #[test]
+    fn extracts_thinking_update_from_json_line() {
+        let line = r#"{"type":"delta","thinking":"inspect files first"}"#;
+        assert_eq!(
+            super::extract_thinking_update(line).as_deref(),
+            Some("inspect files first")
+        );
+    }
+
+    #[test]
+    fn extracts_thinking_update_from_plain_text_line() {
+        let line = "thinking: gather current status";
+        assert_eq!(
+            super::extract_thinking_update(line).as_deref(),
+            Some("thinking: gather current status")
+        );
+    }
+
+    #[test]
+    fn ignores_non_thinking_output_line() {
+        let line = "implementation completed";
+        assert_eq!(super::extract_thinking_update(line), None);
     }
 
     #[cfg(windows)]

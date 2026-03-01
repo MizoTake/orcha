@@ -99,9 +99,10 @@ agents:
 ```
 
 `mode: "http"` の場合は `endpoint` を使い、`mode: "cli"` の場合は `cli.command` を直接実行します。
-`ensure_no_permission_flags: true` の場合、`command` が `codex` / `claude` なら以下を自動付与します。
+`ensure_no_permission_flags: true` の場合、`command` に応じて以下を自動適用します。
 - `codex`: `--ask-for-approval never`（未指定時）
 - `claude`: `--dangerously-skip-permissions`（未指定時）
+- `opencode`: 環境変数 `OPENCODE_PERMISSION={"*":"allow","doom_loop":"allow"}` を付与
 
 ## scripts
 
