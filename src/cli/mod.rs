@@ -30,9 +30,9 @@ pub enum Command {
 
     /// Execute cycles until goal is done or a stop condition is reached
     Run {
-        /// Allow multiple orcha run processes on the same .orcha directory.
+        /// Enforce single-writer lock (default: disabled for concurrent runs).
         #[arg(long, default_value_t = false)]
-        allow_concurrent: bool,
+        enforce_lock: bool,
     },
 
     /// Display current status
@@ -70,19 +70,19 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Run {
-                allow_concurrent: false
+                enforce_lock: false
             }
         ));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
     }
 
     #[test]
-    fn cli_accepts_allow_concurrent_flag_for_run() {
-        let cli = Cli::parse_from(["orcha", "run", "--allow-concurrent"]);
+    fn cli_accepts_enforce_lock_flag_for_run() {
+        let cli = Cli::parse_from(["orcha", "run", "--enforce-lock"]);
         assert!(matches!(
             cli.command,
             Command::Run {
-                allow_concurrent: true
+                enforce_lock: true
             }
         ));
     }

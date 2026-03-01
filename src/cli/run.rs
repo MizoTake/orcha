@@ -2,6 +2,7 @@ use std::path::Path;
 use std::collections::HashSet;
 
 use colored::Colorize;
+use tokio::process::Command;
 
 use crate::agent::{AgentKind, router::AgentRouter};
 use crate::config::AppConfig;
@@ -41,11 +42,21 @@ pub async fn execute(
 
     // Check writer lock and acquire lock unless concurrent mode is requested.
     if !allow_concurrent {
-        if let Some(ref writer) = status.frontmatter.locks.writer {
-            return Err(OrchaError::LockConflict {
-                holder: writer.clone(),
+        if let Some(writer) = status.frontmatter.locks.writer.clone() {
+            if is_stale_writer_lock(&writer).await {
+                println!(
+                    "  {} Clearing stale lock: {}",
+                    "⚠".yellow(),
+                    writer
+                );
+                status.frontmatter.locks.writer = None;
+                status.save(&status_path).await?;
+            } else {
+                return Err(OrchaError::LockConflict {
+                    holder: writer.clone(),
+                }
+                .into());
             }
-            .into());
         }
 
         let lock_id = format!("orch-{}", std::process::id());
@@ -270,9 +281,53 @@ fn is_limit_message(msg: &str) -> bool {
     NEEDLES.iter().any(|needle| msg.contains(needle))
 }
 
+async fn is_stale_writer_lock(writer: &str) -> bool {
+    let Some(pid) = parse_lock_pid(writer) else {
+        return false;
+    };
+    !process_exists(pid).await
+}
+
+fn parse_lock_pid(writer: &str) -> Option<u32> {
+    writer.strip_prefix("orch-")?.parse::<u32>().ok()
+}
+
+#[cfg(windows)]
+async fn process_exists(pid: u32) -> bool {
+    let filter = format!("PID eq {}", pid);
+    let output = Command::new("tasklist")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if stdout.trim().is_empty() {
+        return false;
+    }
+    let lower = stdout.to_ascii_lowercase();
+    if lower.contains("no tasks are running") {
+        return false;
+    }
+    stdout.contains(&format!("\"{}\"", pid))
+}
+
+#[cfg(not(windows))]
+async fn process_exists(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::detect_limit_reached_cli_agent;
+    use super::{detect_limit_reached_cli_agent, parse_lock_pid, process_exists};
     use crate::agent::AgentKind;
 
     #[test]
@@ -294,5 +349,17 @@ mod tests {
     fn ignore_non_limit_cli_error() {
         let err = anyhow::anyhow!("Local CLI 'codex' failed with exit code Some(1): syntax error");
         assert_eq!(detect_limit_reached_cli_agent(&err), None);
+    }
+
+    #[test]
+    fn parse_lock_pid_accepts_orch_lock_format() {
+        assert_eq!(parse_lock_pid("orch-1234"), Some(1234));
+        assert_eq!(parse_lock_pid("orch-abc"), None);
+        assert_eq!(parse_lock_pid("other-1234"), None);
+    }
+
+    #[tokio::test]
+    async fn process_exists_detects_current_process() {
+        assert!(process_exists(std::process::id()).await);
     }
 }
