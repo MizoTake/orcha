@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::collections::HashSet;
 use std::future::Future;
+use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
@@ -280,12 +281,12 @@ where
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
     let started_at = Instant::now();
 
-    println!(
+    print_inline_status(&format!(
         "  {} {} 実行中... (role: {})",
         "…".dimmed(),
         phase.to_string().yellow(),
         phase.role_name()
-    );
+    ));
 
     tokio::pin!(phase_future);
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -296,24 +297,34 @@ where
     loop {
         tokio::select! {
             result = &mut phase_future => {
-                println!(
+                finish_inline_status(&format!(
                     "  {} {} 完了 ({}s)",
                     "✓".green(),
                     phase.to_string().yellow(),
                     started_at.elapsed().as_secs()
-                );
+                ));
                 return result;
             }
             _ = heartbeat.tick() => {
-                println!(
+                print_inline_status(&format!(
                     "  {} {} 実行中... {}s 経過",
                     "…".dimmed(),
                     phase.to_string().yellow(),
                     started_at.elapsed().as_secs()
-                );
+                ));
             }
         }
     }
+}
+
+fn print_inline_status(message: &str) {
+    print!("\r\x1b[2K{}", message);
+    let _ = io::stdout().flush();
+}
+
+fn finish_inline_status(message: &str) {
+    print_inline_status(message);
+    println!();
 }
 
 pub async fn release_writer_lock_for_current_process(orch_dir: &Path) -> anyhow::Result<bool> {

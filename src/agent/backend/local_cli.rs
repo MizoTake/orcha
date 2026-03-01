@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Stdio;
+use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -140,6 +141,7 @@ fn has_flag_value(args: &[String], flag: &str, value: &str) -> bool {
 impl Agent for LocalCliAgent {
     async fn respond(&self, context: &AgentContext) -> anyhow::Result<AgentResponse> {
         let prompt = self.build_prompt(context);
+        let request_preview = summarize_request(&context.instruction, 120);
 
         let mut cmd = Command::new(&self.command);
         cmd.args(&self.args);
@@ -189,6 +191,7 @@ impl Agent for LocalCliAgent {
             child_pid,
             self.prompt_via_stdin,
             &self.model,
+            &request_preview,
         )
         .await?;
 
@@ -232,6 +235,7 @@ async fn wait_with_output_and_heartbeat(
     child_pid: Option<u32>,
     prompt_via_stdin: bool,
     model: &str,
+    request_preview: &str,
 ) -> anyhow::Result<std::process::Output> {
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
     let pid = child_pid
@@ -244,10 +248,10 @@ async fn wait_with_output_and_heartbeat(
         model
     };
 
-    println!(
-        "  ... local CLI start: command='{}' pid={} prompt_mode={} model={}",
-        command, pid, prompt_mode, model_name
-    );
+    print_inline_status(&format!(
+        "  ... local CLI start: command='{}' pid={} prompt_mode={} model={} request=\"{}\"",
+        command, pid, prompt_mode, model_name, request_preview
+    ));
 
     let started_at = Instant::now();
     let mut wait_future = Box::pin(child.wait_with_output());
@@ -258,26 +262,60 @@ async fn wait_with_output_and_heartbeat(
     loop {
         tokio::select! {
             output = &mut wait_future => {
-                let output = output.map_err(|e| anyhow::anyhow!("Failed waiting for CLI '{}': {}", command, e))?;
-                println!(
-                    "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?}",
+                match output {
+                    Ok(output) => {
+                        finish_inline_status(&format!(
+                            "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?} request=\"{}\"",
+                            command,
+                            pid,
+                            started_at.elapsed().as_secs(),
+                            output.status.code(),
+                            request_preview
+                        ));
+                        return Ok(output);
+                    }
+                    Err(e) => {
+                        finish_inline_status(&format!(
+                            "  ... local CLI wait failed: command='{}' pid={} elapsed={}s request=\"{}\"",
+                            command,
+                            pid,
+                            started_at.elapsed().as_secs(),
+                            request_preview
+                        ));
+                        return Err(anyhow::anyhow!("Failed waiting for CLI '{}': {}", command, e));
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                print_inline_status(&format!(
+                    "  ... local CLI waiting: command='{}' pid={} elapsed={}s request=\"{}\"",
                     command,
                     pid,
                     started_at.elapsed().as_secs(),
-                    output.status.code()
-                );
-                return Ok(output);
-            }
-            _ = heartbeat.tick() => {
-                println!(
-                    "  ... local CLI waiting: command='{}' pid={} elapsed={}s",
-                    command,
-                    pid,
-                    started_at.elapsed().as_secs()
-                );
+                    request_preview
+                ));
             }
         }
     }
+}
+
+fn summarize_request(raw: &str, max_chars: usize) -> String {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let truncated: String = compact.chars().take(max_chars).collect();
+    format!("{truncated}...")
+}
+
+fn print_inline_status(message: &str) {
+    print!("\r\x1b[2K{}", message);
+    let _ = io::stdout().flush();
+}
+
+fn finish_inline_status(message: &str) {
+    print_inline_status(message);
+    println!();
 }
 
 #[cfg(test)]
