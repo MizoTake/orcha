@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::collections::HashSet;
+use std::future::Future;
+use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use tokio::process::Command;
@@ -113,13 +115,34 @@ pub async fn execute(
         .await?;
 
         let result = match phase {
-            Phase::Briefing => phase::briefing::execute(orch_dir, &mut status, &router).await,
-            Phase::Plan => phase::plan::execute(orch_dir, &mut status, &router).await,
-            Phase::Impl => phase::impl_phase::execute(orch_dir, &mut status, &router).await,
-            Phase::Review => phase::review::execute(orch_dir, &mut status, &router).await,
-            Phase::Fix => phase::fix::execute(orch_dir, &mut status, &router).await,
-            Phase::Verify => phase::verify::execute(orch_dir, &mut status).await,
-            Phase::Decide => phase::decide::execute(orch_dir, &mut status, &router).await,
+            Phase::Briefing => {
+                execute_phase_with_heartbeat(phase, phase::briefing::execute(orch_dir, &mut status, &router))
+                    .await
+            }
+            Phase::Plan => {
+                execute_phase_with_heartbeat(phase, phase::plan::execute(orch_dir, &mut status, &router))
+                    .await
+            }
+            Phase::Impl => {
+                execute_phase_with_heartbeat(phase, phase::impl_phase::execute(orch_dir, &mut status, &router))
+                    .await
+            }
+            Phase::Review => {
+                execute_phase_with_heartbeat(phase, phase::review::execute(orch_dir, &mut status, &router))
+                    .await
+            }
+            Phase::Fix => {
+                execute_phase_with_heartbeat(phase, phase::fix::execute(orch_dir, &mut status, &router))
+                    .await
+            }
+            Phase::Verify => {
+                execute_phase_with_heartbeat(phase, phase::verify::execute(orch_dir, &mut status))
+                    .await
+            }
+            Phase::Decide => {
+                execute_phase_with_heartbeat(phase, phase::decide::execute(orch_dir, &mut status, &router))
+                    .await
+            }
         };
 
         let mut stop = false;
@@ -248,6 +271,49 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+async fn execute_phase_with_heartbeat<F>(phase: Phase, phase_future: F) -> anyhow::Result<CycleDecision>
+where
+    F: Future<Output = anyhow::Result<CycleDecision>>,
+{
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+    let started_at = Instant::now();
+
+    println!(
+        "  {} {} 実行中... (role: {})",
+        "…".dimmed(),
+        phase.to_string().yellow(),
+        phase.role_name()
+    );
+
+    tokio::pin!(phase_future);
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // First tick fires immediately; consume it so heartbeat starts after interval.
+    heartbeat.tick().await;
+
+    loop {
+        tokio::select! {
+            result = &mut phase_future => {
+                println!(
+                    "  {} {} 完了 ({}s)",
+                    "✓".green(),
+                    phase.to_string().yellow(),
+                    started_at.elapsed().as_secs()
+                );
+                return result;
+            }
+            _ = heartbeat.tick() => {
+                println!(
+                    "  {} {} 実行中... {}s 経過",
+                    "…".dimmed(),
+                    phase.to_string().yellow(),
+                    started_at.elapsed().as_secs()
+                );
+            }
+        }
+    }
 }
 
 pub async fn release_writer_lock_for_current_process(orch_dir: &Path) -> anyhow::Result<bool> {
