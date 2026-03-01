@@ -30,6 +30,7 @@ pub async fn run(commands: &[String]) -> anyhow::Result<VerifyResult> {
         }
 
         let output = Command::new("sh")
+            .kill_on_drop(true)
             .arg("-c")
             .arg(cmd)
             .output()

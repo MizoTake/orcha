@@ -59,7 +59,7 @@ pub async fn execute(
             }
         }
 
-        let lock_id = format!("orch-{}", std::process::id());
+        let lock_id = lock_id_for_pid(std::process::id());
         status.frontmatter.locks.writer = Some(lock_id);
         status.save(&status_path).await?;
     }
@@ -91,11 +91,16 @@ pub async fn execute(
         let status_before_phase = status.clone();
 
         let phase = status.frontmatter.phase;
+        status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+        status.save(&status_path).await?;
         println!(
-            "{} Cycle {} / Phase: {}",
+            "{} Cycle {} / Phase: {} {} ({}/{})",
             "▶".green(),
             status.frontmatter.cycle,
-            phase.to_string().yellow()
+            phase.to_string().yellow(),
+            phase.gauge().dimmed(),
+            phase.position(),
+            Phase::total()
         );
 
         status_log::append(
@@ -245,6 +250,37 @@ pub async fn execute(
     Ok(())
 }
 
+pub async fn release_writer_lock_for_current_process(orch_dir: &Path) -> anyhow::Result<bool> {
+    release_writer_lock_for_pid(orch_dir, std::process::id()).await
+}
+
+async fn release_writer_lock_for_pid(orch_dir: &Path, pid: u32) -> anyhow::Result<bool> {
+    let status_path = agent_workspace::resolve_status_path(orch_dir);
+    if !status_path.exists() {
+        return Ok(false);
+    }
+
+    let mut status = StatusFile::load(&status_path).await?;
+    if clear_writer_lock_if_matches(&mut status, &lock_id_for_pid(pid)) {
+        status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+        status.save(&status_path).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn clear_writer_lock_if_matches(status: &mut StatusFile, expected_lock_id: &str) -> bool {
+    if status.frontmatter.locks.writer.as_deref() != Some(expected_lock_id) {
+        return false;
+    }
+    status.frontmatter.locks.writer = None;
+    true
+}
+
+fn lock_id_for_pid(pid: u32) -> String {
+    format!("orch-{pid}")
+}
+
 fn detect_limit_reached_cli_agent(err: &anyhow::Error) -> Option<AgentKind> {
     let msg = err.to_string().to_lowercase();
     if !msg.contains("local cli '") {
@@ -327,8 +363,20 @@ async fn process_exists(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_limit_reached_cli_agent, parse_lock_pid, process_exists};
+    use super::{
+        clear_writer_lock_if_matches, detect_limit_reached_cli_agent, lock_id_for_pid, parse_lock_pid,
+        process_exists, release_writer_lock_for_pid,
+    };
     use crate::agent::AgentKind;
+    use crate::core::{agent_workspace, status::StatusFile};
+    use tempfile::TempDir;
+
+    fn sample_status_with_writer(writer: &str) -> String {
+        format!(
+            "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: {}\n  active_task: null\n---\n\n## Goal\n\nBuild the thing.\n",
+            writer
+        )
+    }
 
     #[test]
     fn detect_limit_for_claude_cli_error() {
@@ -356,6 +404,65 @@ mod tests {
         assert_eq!(parse_lock_pid("orch-1234"), Some(1234));
         assert_eq!(parse_lock_pid("orch-abc"), None);
         assert_eq!(parse_lock_pid("other-1234"), None);
+    }
+
+    #[test]
+    fn clear_writer_lock_only_when_lock_matches() {
+        let mut status = StatusFile::from_str(&sample_status_with_writer("orch-1234"))
+            .expect("status should parse");
+        assert!(clear_writer_lock_if_matches(&mut status, "orch-1234"));
+        assert_eq!(status.frontmatter.locks.writer, None);
+
+        let mut status = StatusFile::from_str(&sample_status_with_writer("orch-1234"))
+            .expect("status should parse");
+        assert!(!clear_writer_lock_if_matches(&mut status, "orch-9876"));
+        assert_eq!(
+            status.frontmatter.locks.writer,
+            Some("orch-1234".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn release_writer_lock_for_pid_updates_status_file() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let workspace = agent_workspace::dir(temp.path());
+        std::fs::create_dir_all(&workspace).expect("workspace should be created");
+        let status_path = workspace.join("status.md");
+        std::fs::write(&status_path, sample_status_with_writer("orch-4321"))
+            .expect("status should be written");
+
+        let released = release_writer_lock_for_pid(temp.path(), 4321)
+            .await
+            .expect("release should succeed");
+        assert!(released);
+
+        let saved = StatusFile::load(&status_path)
+            .await
+            .expect("status should load");
+        assert_eq!(saved.frontmatter.locks.writer, None);
+    }
+
+    #[tokio::test]
+    async fn release_writer_lock_for_pid_ignores_other_owner() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let workspace = agent_workspace::dir(temp.path());
+        std::fs::create_dir_all(&workspace).expect("workspace should be created");
+        let status_path = workspace.join("status.md");
+        std::fs::write(&status_path, sample_status_with_writer("orch-1234"))
+            .expect("status should be written");
+
+        let released = release_writer_lock_for_pid(temp.path(), 9999)
+            .await
+            .expect("release should succeed");
+        assert!(!released);
+
+        let saved = StatusFile::load(&status_path)
+            .await
+            .expect("status should load");
+        assert_eq!(
+            saved.frontmatter.locks.writer,
+            Some(lock_id_for_pid(1234))
+        );
     }
 
     #[tokio::test]

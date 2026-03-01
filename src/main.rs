@@ -19,7 +19,7 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    if let Err(err) = run(cli).await {
+    if let Err(err) = run_with_interrupt(cli).await {
         if let Some(orcha_err) = err.downcast_ref::<OrchaError>() {
             eprintln!("Error: {}", orcha_err);
             match orcha_err {
@@ -49,6 +49,28 @@ async fn main() {
             eprintln!("Error: {:?}", err);
         }
         std::process::exit(1);
+    }
+}
+
+async fn run_with_interrupt(cli: Cli) -> anyhow::Result<()> {
+    let orch_dir = cli.orch_dir.clone();
+    if !matches!(&cli.command, Command::Run { .. }) {
+        return run(cli).await;
+    }
+
+    tokio::select! {
+        result = run(cli) => result,
+        signal_result = tokio::signal::ctrl_c() => {
+            signal_result.map_err(|e| anyhow::anyhow!("Failed to listen for Ctrl+C: {}", e))?;
+
+            if let Err(err) = orcha::cli::run::release_writer_lock_for_current_process(&orch_dir).await {
+                tracing::warn!("Failed to release writer lock after Ctrl+C: {}", err);
+            }
+
+            Err(OrchaError::StopCondition {
+                reason: "Interrupted by Ctrl+C".to_string(),
+            }.into())
+        }
     }
 }
 

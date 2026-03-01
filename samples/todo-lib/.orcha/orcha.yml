@@ -7,7 +7,7 @@ agents:
     cli:
       command: "opencode-cli"
       args: ["run"]
-      prompt_via_stdin: false
+      prompt_via_stdin: true
       model_arg: "-m"
       ensure_no_permission_flags: true
 
@@ -16,7 +16,7 @@ agents:
     cli:
       command: "claude"
       args: ["-p"]
-      prompt_via_stdin: false
+      prompt_via_stdin: true
       model_arg: null
       ensure_no_permission_flags: true
   gemini:
@@ -24,7 +24,7 @@ agents:
     cli:
       command: "gemini"
       args: ["-p"]
-      prompt_via_stdin: false
+      prompt_via_stdin: true
       model_arg: null
       ensure_no_permission_flags: true
   codex:
@@ -32,7 +32,7 @@ agents:
     cli:
       command: "codex"
       args: ["exec", "--skip-git-repo-check"]
-      prompt_via_stdin: false
+      prompt_via_stdin: true
       model_arg: null
       ensure_no_permission_flags: true
 

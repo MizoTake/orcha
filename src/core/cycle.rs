@@ -50,6 +50,28 @@ impl Phase {
             Phase::Decide,
         ]
     }
+
+    pub fn position(self) -> usize {
+        match self {
+            Phase::Briefing => 1,
+            Phase::Plan => 2,
+            Phase::Impl => 3,
+            Phase::Review => 4,
+            Phase::Fix => 5,
+            Phase::Verify => 6,
+            Phase::Decide => 7,
+        }
+    }
+
+    pub fn total() -> usize {
+        Self::all().len()
+    }
+
+    pub fn gauge(self) -> String {
+        let done = self.position();
+        let total = Self::total();
+        format!("[{}{}]", "#".repeat(done), "-".repeat(total - done))
+    }
 }
 
 impl fmt::Display for Phase {
@@ -123,5 +145,15 @@ mod tests {
         assert_eq!(Phase::Fix.role_name(), "implementer");
         assert_eq!(Phase::Verify.role_name(), "verifier");
         assert_eq!(Phase::Decide.role_name(), "planner");
+    }
+
+    #[test]
+    fn phase_position_and_gauge() {
+        assert_eq!(Phase::Briefing.position(), 1);
+        assert_eq!(Phase::Decide.position(), 7);
+        assert_eq!(Phase::total(), 7);
+        assert_eq!(Phase::Briefing.gauge(), "[#------]");
+        assert_eq!(Phase::Review.gauge(), "[####---]");
+        assert_eq!(Phase::Decide.gauge(), "[#######]");
     }
 }

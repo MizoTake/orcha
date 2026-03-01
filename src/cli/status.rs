@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use colored::Colorize;
 use comfy_table::{Cell, Color, Table};
 
@@ -58,9 +59,18 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     }
     println!("  Cycle:   {}", status.frontmatter.cycle.to_string().bold());
     println!(
-        "  Phase:   {}",
-        status.frontmatter.phase.to_string().yellow()
+        "  Phase:   {} {} ({}/{})",
+        status.frontmatter.phase.to_string().yellow(),
+        status.frontmatter.phase.gauge().dimmed(),
+        status.frontmatter.phase.position(),
+        crate::core::cycle::Phase::total()
     );
+    let age_seconds = last_update_age_seconds(&status.frontmatter.last_update);
+    println!(
+        "  Last update: {}",
+        format_last_update(&status.frontmatter.last_update, age_seconds)
+    );
+    println!("  Activity: {}", format_activity(age_seconds));
     println!("  Health:  {}", format_health(health));
     println!(
         "  Budget:  {}/{}",
@@ -129,5 +139,29 @@ fn format_health(health: Health) -> String {
         Health::Green => "green".green().bold().to_string(),
         Health::Yellow => "yellow".yellow().bold().to_string(),
         Health::Red => "red".red().bold().to_string(),
+    }
+}
+
+fn last_update_age_seconds(last_update: &str) -> Option<i64> {
+    let parsed = DateTime::parse_from_rfc3339(last_update).ok()?;
+    let now = Utc::now();
+    let age = now.signed_duration_since(parsed.with_timezone(&Utc)).num_seconds();
+    Some(age.max(0))
+}
+
+fn format_last_update(last_update: &str, age_seconds: Option<i64>) -> String {
+    match age_seconds {
+        Some(seconds) => format!("{} ({}s ago)", last_update.dimmed(), seconds),
+        None => last_update.dimmed().to_string(),
+    }
+}
+
+fn format_activity(age_seconds: Option<i64>) -> String {
+    match age_seconds {
+        Some(seconds) if seconds <= 30 => "active".green().bold().to_string(),
+        Some(seconds) if seconds <= 180 => "progressing".cyan().bold().to_string(),
+        Some(seconds) if seconds <= 900 => "slow".yellow().bold().to_string(),
+        Some(_) => "stale".red().bold().to_string(),
+        None => "unknown".white().to_string(),
     }
 }
