@@ -47,6 +47,7 @@ agents:
       prompt_via_stdin: false
       model_arg: "-m"    # appended as: -m <model>
       ensure_no_permission_flags: true # codex/claude は no-permission 向けフラグ、opencode は OPENCODE_PERMISSION を自動付与
+      timeout_seconds: 21600 # CLI呼び出しのタイムアウト（秒）
   claude: # legacy alias: anthropic
     api_key_env: "ANTHROPIC_API_KEY"
     model: "claude-sonnet-4-20250514"
@@ -65,6 +66,9 @@ execution:
     mixins: []         # e.g. [{ from: "quality_gate", fields: ["review_agent", "security_gate"] }]
   cli_limit:
     disable_agent_on_limit: true # true: claude/codex CLI が limit/quota エラー時にその run 中は無効化
+  max_cycles: 20 # run全体の最大サイクル数
+  phase_timeout_seconds: 21600 # 各phaseのタイムアウト（秒）
+  max_consecutive_verify_failures: 3 # verify連続失敗で停止
   acceptance_criteria:
     - "Criterion 1"
     - "Criterion 2"

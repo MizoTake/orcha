@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 pub const AGENT_WORKSPACE_DIR: &str = "agentworkspace";
 pub const STATUS_FILE_NAME: &str = "status.md";
 pub const STATUS_LOG_FILE_NAME: &str = "status_log.md";
+pub const EVENTS_LOG_FILE_NAME: &str = "events.jsonl";
 
 pub fn dir(orch_dir: &Path) -> PathBuf {
     orch_dir.join(AGENT_WORKSPACE_DIR)
@@ -14,6 +15,10 @@ pub fn status_path(orch_dir: &Path) -> PathBuf {
 
 pub fn status_log_path(orch_dir: &Path) -> PathBuf {
     dir(orch_dir).join(STATUS_LOG_FILE_NAME)
+}
+
+pub fn events_log_path(orch_dir: &Path) -> PathBuf {
+    dir(orch_dir).join(EVENTS_LOG_FILE_NAME)
 }
 
 pub fn resolve_status_path(orch_dir: &Path) -> PathBuf {

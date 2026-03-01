@@ -20,6 +20,7 @@ pub struct LocalCliAgent {
     model_arg: Option<String>,
     prompt_via_stdin: bool,
     ensure_no_permission_flags: bool,
+    timeout_seconds: u64,
     agent_kind: AgentKind,
 }
 
@@ -42,6 +43,7 @@ impl LocalCliAgent {
             model_arg: cli.model_arg.clone(),
             prompt_via_stdin: cli.prompt_via_stdin,
             ensure_no_permission_flags: cli.ensure_no_permission_flags,
+            timeout_seconds: cli.timeout_seconds,
             agent_kind: kind,
         })
     }
@@ -241,6 +243,7 @@ impl Agent for LocalCliAgent {
             &self.model,
             &request_preview,
             thinking_enabled,
+            self.timeout_seconds,
         )
         .await?;
 
@@ -302,6 +305,7 @@ async fn wait_with_output_and_heartbeat(
     model: &str,
     request_preview: &str,
     thinking_enabled: bool,
+    timeout_seconds: u64,
 ) -> anyhow::Result<std::process::Output> {
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
     let pid = child_pid
@@ -387,6 +391,26 @@ async fn wait_with_output_and_heartbeat(
                 }
             }
             _ = heartbeat.tick(), if status.is_none() => {
+                if timeout_seconds > 0 && started_at.elapsed().as_secs() >= timeout_seconds {
+                    drop(wait_future);
+                    let _ = child.start_kill();
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    finish_inline_status(&format!(
+                        "  ... local CLI timeout: command='{}' pid={} elapsed={}s limit={}s request=\"{}\"",
+                        command,
+                        pid,
+                        started_at.elapsed().as_secs(),
+                        timeout_seconds,
+                        request_preview
+                    ));
+                    return Err(anyhow::anyhow!(
+                        "Local CLI '{}' timed out after {} seconds",
+                        command,
+                        timeout_seconds
+                    ));
+                }
+
                 if last_thinking.is_empty() {
                     print_inline_status(&format!(
                         "  ... local CLI waiting: command='{}' pid={} elapsed={}s request=\"{}\"",
@@ -593,6 +617,7 @@ mod tests {
                 prompt_via_stdin: true,
                 model_arg: None,
                 ensure_no_permission_flags: ensure_no_permission,
+                timeout_seconds: 1200,
             },
             anthropic_api_key: None,
             anthropic_model: "claude-sonnet-4-20250514".to_string(),
@@ -628,6 +653,7 @@ mod tests {
                 prompt_via_stdin: false,
                 model_arg: None,
                 ensure_no_permission_flags: true,
+                timeout_seconds: 1200,
             },
             "llama3.2",
             AgentKind::LocalLlm,

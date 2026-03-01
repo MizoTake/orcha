@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::agent::router::AgentRouter;
 use crate::core::agent_workspace;
-use crate::core::cycle::{CycleDecision, StopReason, MAX_CYCLES};
+use crate::core::cycle::{CycleDecision, StopReason};
 use crate::core::profile::ProfileName;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
@@ -19,6 +19,7 @@ pub async fn execute(
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let tasks = status.tasks()?;
     let machine = MachineConfig::load(orch_dir)?;
+    let max_cycles = machine.execution.max_cycles.max(1);
     let criteria_count = machine.execution.acceptance_criteria.len();
 
     let verify_passed = status.content.contains("Overall: PASS");
@@ -45,13 +46,13 @@ pub async fn execute(
 
     // Check stop conditions
     let next_cycle = status.frontmatter.cycle + 1;
-    if next_cycle >= MAX_CYCLES {
+    if next_cycle >= max_cycles {
         status_log::append(
             &log_path,
             "decide",
             "planner",
             "orch",
-            &format!("Maximum cycles ({}) reached", MAX_CYCLES),
+            &format!("Maximum cycles ({}) reached", max_cycles),
         )
         .await?;
         return Ok(CycleDecision::Blocked(StopReason::MaxCyclesReached));

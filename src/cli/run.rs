@@ -9,12 +9,13 @@ use tokio::process::Command;
 
 use crate::agent::{AgentKind, router::AgentRouter};
 use crate::config::AppConfig;
-use crate::core::cycle::{CycleDecision, Phase, StopReason, MAX_CYCLES};
+use crate::core::cycle::{CycleDecision, Phase, StopReason};
 use crate::core::error::OrchaError;
 use crate::core::profile;
 use crate::core::agent_workspace;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::core::structured_log;
 use crate::machine_config::MachineConfig;
 use crate::phase;
 
@@ -35,9 +36,17 @@ pub async fn execute(
     let mut status = StatusFile::load(&status_path).await?;
 
     let machine = MachineConfig::load(orch_dir)?;
+    let max_cycles = machine.execution.max_cycles.max(1);
+    let max_consecutive_verify_failures = machine.execution.max_consecutive_verify_failures.max(1);
+    let phase_timeout = if machine.execution.phase_timeout_seconds == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(machine.execution.phase_timeout_seconds))
+    };
+    let mut consecutive_verify_failures = 0u32;
 
     // Check stop conditions
-    if status.frontmatter.cycle >= MAX_CYCLES {
+    if status.frontmatter.cycle >= max_cycles {
         return Err(OrchaError::StopCondition {
             reason: StopReason::MaxCyclesReached.to_string(),
         }
@@ -74,7 +83,7 @@ pub async fn execute(
     let mut disabled_agents_by_cli_limit: HashSet<AgentKind> = HashSet::new();
     loop {
         // Check stop conditions before each phase step.
-        if status.frontmatter.cycle >= MAX_CYCLES {
+        if status.frontmatter.cycle >= max_cycles {
             terminal_error = Some(
                 OrchaError::StopCondition {
                     reason: StopReason::MaxCyclesReached.to_string(),
@@ -136,34 +145,70 @@ pub async fn execute(
             &format!("Starting phase: {}", phase),
         )
         .await?;
+        append_structured_event(
+            orch_dir,
+            &status,
+            phase,
+            "phase_start",
+            &format!("Starting phase: {}", phase),
+        )
+        .await;
 
         let result = match phase {
             Phase::Briefing => {
-                execute_phase_with_heartbeat(phase, phase::briefing::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::briefing::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Plan => {
-                execute_phase_with_heartbeat(phase, phase::plan::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::plan::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Impl => {
-                execute_phase_with_heartbeat(phase, phase::impl_phase::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::impl_phase::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Review => {
-                execute_phase_with_heartbeat(phase, phase::review::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::review::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Fix => {
-                execute_phase_with_heartbeat(phase, phase::fix::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::fix::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Verify => {
-                execute_phase_with_heartbeat(phase, phase::verify::execute(orch_dir, &mut status))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::verify::execute(orch_dir, &mut status),
+                    phase_timeout,
+                )
                     .await
             }
             Phase::Decide => {
-                execute_phase_with_heartbeat(phase, phase::decide::execute(orch_dir, &mut status, &router))
+                execute_phase_with_heartbeat(
+                    phase,
+                    phase::decide::execute(orch_dir, &mut status, &router),
+                    phase_timeout,
+                )
                     .await
             }
         };
@@ -223,6 +268,74 @@ pub async fn execute(
                     &format!("Phase result: {:?}", decision),
                 )
                 .await?;
+                append_structured_event(
+                    orch_dir,
+                    &status,
+                    phase,
+                    "phase_result",
+                    &format!("{:?}", decision),
+                )
+                .await;
+
+                if phase == Phase::Verify {
+                    let verify_failed = status.content.contains("Overall: FAIL");
+                    if verify_failed {
+                        consecutive_verify_failures = consecutive_verify_failures.saturating_add(1);
+                        let detail = format!(
+                            "Verification failed consecutively: {}/{}",
+                            consecutive_verify_failures, max_consecutive_verify_failures
+                        );
+                        println!("  {} {}", "⚠".yellow(), detail);
+                        status_log::append(
+                            &log_path,
+                            "verify",
+                            "verifier",
+                            "orch",
+                            &detail,
+                        )
+                        .await?;
+                        append_structured_event(
+                            orch_dir,
+                            &status,
+                            phase,
+                            "verify_failed",
+                            &detail,
+                        )
+                        .await;
+                    } else if consecutive_verify_failures > 0 {
+                        consecutive_verify_failures = 0;
+                    }
+
+                    if consecutive_verify_failures >= max_consecutive_verify_failures {
+                        let reason = format!(
+                            "Verification failed {} times consecutively (limit: {})",
+                            consecutive_verify_failures, max_consecutive_verify_failures
+                        );
+                        status_log::append(
+                            &log_path,
+                            "decide",
+                            "planner",
+                            "orch",
+                            &reason,
+                        )
+                        .await?;
+                        append_structured_event(
+                            orch_dir,
+                            &status,
+                            phase,
+                            "stop_condition",
+                            &reason,
+                        )
+                        .await;
+                        terminal_error = Some(
+                            OrchaError::StopCondition {
+                                reason,
+                            }
+                            .into(),
+                        );
+                        stop = true;
+                    }
+                }
             }
             Err(err) => {
                 let limited_agent = if machine.execution.cli_limit.disable_agent_on_limit {
@@ -249,6 +362,14 @@ pub async fn execute(
                             ),
                         )
                         .await?;
+                        append_structured_event(
+                            orch_dir,
+                            &status,
+                            phase,
+                            "phase_retry",
+                            &format!("CLI limit detected for {}; retrying phase", agent_kind),
+                        )
+                        .await;
                         // Revert in-memory phase-side effects before retrying.
                         status = status_before_phase;
                         retry_phase = true;
@@ -265,6 +386,14 @@ pub async fn execute(
                         &format!("Phase failed: {}", err),
                     )
                     .await?;
+                    append_structured_event(
+                        orch_dir,
+                        &status,
+                        phase,
+                        "phase_failed",
+                        &err.to_string(),
+                    )
+                    .await;
                     terminal_error = Some(err);
                     stop = true;
                 }
@@ -296,7 +425,11 @@ pub async fn execute(
     Ok(())
 }
 
-async fn execute_phase_with_heartbeat<F>(phase: Phase, phase_future: F) -> anyhow::Result<CycleDecision>
+async fn execute_phase_with_heartbeat<F>(
+    phase: Phase,
+    phase_future: F,
+    phase_timeout: Option<Duration>,
+) -> anyhow::Result<CycleDecision>
 where
     F: Future<Output = anyhow::Result<CycleDecision>>,
 {
@@ -328,6 +461,22 @@ where
                 return result;
             }
             _ = heartbeat.tick() => {
+                if let Some(timeout) = phase_timeout {
+                    if started_at.elapsed() >= timeout {
+                        finish_inline_status(&format!(
+                            "  {} {} timeout ({}s >= {}s)",
+                            "✗".red(),
+                            phase.to_string().yellow(),
+                            started_at.elapsed().as_secs(),
+                            timeout.as_secs()
+                        ));
+                        anyhow::bail!(
+                            "Phase '{}' timed out after {} seconds",
+                            phase,
+                            timeout.as_secs()
+                        );
+                    }
+                }
                 print_inline_status(&format!(
                     "  {} {} 実行中... {}s 経過",
                     "…".dimmed(),
@@ -336,6 +485,18 @@ where
                 ));
             }
         }
+    }
+}
+
+async fn append_structured_event(
+    orch_dir: &Path,
+    status: &StatusFile,
+    phase: Phase,
+    event: &str,
+    message: &str,
+) {
+    if let Err(err) = structured_log::append(orch_dir, status, phase, event, message).await {
+        eprintln!("  ⚠ structured log write failed: {}", err);
     }
 }
 

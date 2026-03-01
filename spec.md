@@ -100,7 +100,7 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 
 * `agents.local_llm.mode`: `http` / `cli`
 * `agents.local_llm.endpoint`, `agents.local_llm.model`
-* `agents.local_llm.cli.command`, `args`, `prompt_via_stdin`, `model_arg`
+* `agents.local_llm.cli.command`, `args`, `prompt_via_stdin`, `model_arg`, `timeout_seconds`
 * `agents.local_llm.cli.ensure_no_permission_flags`
 * `agents.{claude,gemini,codex}.api_key_env`, `model`
 * `execution.profile`（組み込み: `local_only` / `cheap_checkpoints` / `quality_gate` / `unblock_first` / `opencode_impl_no_review` / `opencode_impl_claude_review` / `opencode_impl_codex_review` / `claude_impl_opencode_review` / `codex_impl_opencode_review`。加えて `.orcha/profiles/<name>.md` があれば任意名を指定可能）
@@ -108,12 +108,16 @@ orcha は、特定のゴール達成まで複数のAIエージェント（local 
 * `execution.profile_strategy.every_n_cycles`
 * `execution.profile_strategy.mixins` (`fields`: `default_agent` / `review_agent` / `escalation` / `security_gate` / `size_gate`)
 * `execution.cli_limit.disable_agent_on_limit` (既定 `true`。`true` で claude/codex CLI が limit/quota エラー後に同一 run 中で無効化)
+* `execution.max_cycles` (run全体の最大サイクル数)
+* `execution.phase_timeout_seconds` (各phaseタイムアウト秒)
+* `execution.max_consecutive_verify_failures` (verify連続失敗で停止)
 * `execution.acceptance_criteria`
 * `execution.verification.commands`
 
 補足:
 * `execution.profile` / `execution.profile_strategy` の profile 名は、実行時に `.orcha/profiles/<name>.md` を参照する。
 * 組み込み profile 名は既定ルールのフォールバックであり、同名ファイルがある場合はファイル記述を優先する。
+* 実行イベントは `.orcha/agentworkspace/events.jsonl` にJSON Lines形式で追記する。
 
 `ensure_no_permission_flags: true` の場合:
 

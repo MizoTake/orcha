@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::cycle::MAX_CYCLES;
 use crate::core::profile::{ProfileName, ProfileRules};
 
 pub const MACHINE_CONFIG_FILE: &str = "orcha.yml";
@@ -56,6 +57,8 @@ pub struct LocalLlmCliConfig {
     pub model_arg: Option<String>,
     #[serde(default = "default_ensure_no_permission_flags")]
     pub ensure_no_permission_flags: bool,
+    #[serde(default = "default_cli_timeout_seconds")]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +89,12 @@ pub struct ExecutionConfig {
     pub profile_strategy: ProfileStrategyConfig,
     #[serde(default)]
     pub cli_limit: CliLimitConfig,
+    #[serde(default = "default_max_cycles")]
+    pub max_cycles: u32,
+    #[serde(default = "default_phase_timeout_seconds")]
+    pub phase_timeout_seconds: u64,
+    #[serde(default = "default_max_consecutive_verify_failures")]
+    pub max_consecutive_verify_failures: u32,
     #[serde(default)]
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
@@ -333,6 +342,7 @@ impl Default for LocalLlmCliConfig {
             prompt_via_stdin: default_prompt_via_stdin(),
             model_arg: None,
             ensure_no_permission_flags: default_ensure_no_permission_flags(),
+            timeout_seconds: default_cli_timeout_seconds(),
         }
     }
 }
@@ -354,6 +364,9 @@ impl Default for ExecutionConfig {
             profile: None,
             profile_strategy: ProfileStrategyConfig::default(),
             cli_limit: CliLimitConfig::default(),
+            max_cycles: default_max_cycles(),
+            phase_timeout_seconds: default_phase_timeout_seconds(),
+            max_consecutive_verify_failures: default_max_consecutive_verify_failures(),
             acceptance_criteria: vec!["Criterion 1".to_string(), "Criterion 2".to_string()],
             verification: VerificationConfig::default(),
         }
@@ -392,8 +405,24 @@ fn default_ensure_no_permission_flags() -> bool {
     true
 }
 
+fn default_cli_timeout_seconds() -> u64 {
+    21600
+}
+
 fn default_disable_agent_on_limit() -> bool {
     true
+}
+
+fn default_max_cycles() -> u32 {
+    MAX_CYCLES
+}
+
+fn default_phase_timeout_seconds() -> u64 {
+    21600
+}
+
+fn default_max_consecutive_verify_failures() -> u32 {
+    3
 }
 
 fn normalize_profile_key(raw: &str) -> String {
@@ -734,6 +763,14 @@ execution:
     }
 
     #[test]
+    fn default_execution_limits_are_set() {
+        let cfg = MachineConfig::default();
+        assert!(cfg.execution.max_cycles > 0);
+        assert!(cfg.execution.phase_timeout_seconds > 0);
+        assert!(cfg.execution.max_consecutive_verify_failures > 0);
+    }
+
+    #[test]
     fn parse_execution_cli_limit_defaults_to_enabled_when_missing() {
         let yml = r#"
 version: 1
@@ -765,6 +802,26 @@ execution:
 
         let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
         assert!(!cfg.execution.cli_limit.disable_agent_on_limit);
+    }
+
+    #[test]
+    fn parse_execution_limits_options() {
+        let yml = r#"
+version: 1
+agents: {}
+execution:
+  max_cycles: 7
+  phase_timeout_seconds: 90
+  max_consecutive_verify_failures: 2
+  acceptance_criteria: []
+  verification:
+    commands: []
+"#;
+
+        let cfg: MachineConfig = serde_yaml::from_str(yml).unwrap();
+        assert_eq!(cfg.execution.max_cycles, 7);
+        assert_eq!(cfg.execution.phase_timeout_seconds, 90);
+        assert_eq!(cfg.execution.max_consecutive_verify_failures, 2);
     }
 
     #[test]
