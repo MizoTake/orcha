@@ -78,6 +78,7 @@ pub async fn execute(
                 content: role,
             },
         ],
+        role: "implementer".to_string(),
         instruction: format!(
             "Implement the following task:\n\
              ID: {}\n\

@@ -48,6 +48,7 @@ pub async fn execute(
                 content: role,
             },
         ],
+        role: "scribe".to_string(),
         instruction: format!(
             "Prepare a briefing for cycle {}. Summarize the current state, \
              what has been accomplished, what remains, and recommend focus areas. \

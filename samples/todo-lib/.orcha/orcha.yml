@@ -3,7 +3,7 @@ version: 1
 agents:
   local_llm:
     mode: "cli"
-    model: "qwen/qwen3-30b-a3b-2507"
+    model: "qwen/qwen3-coder-30b"
     cli:
       command: "opencode-cli"
       args: ["run", "--thinking"]

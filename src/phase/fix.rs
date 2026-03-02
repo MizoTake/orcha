@@ -59,6 +59,7 @@ pub async fn execute(
                 content: role,
             },
         ],
+        role: "implementer".to_string(),
         instruction:
             "Review the must-fix items from the review phase and apply the necessary fixes.\n\
              The review findings are in the Latest Notes section of status.md.\n\

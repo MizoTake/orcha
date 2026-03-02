@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -180,17 +182,178 @@ fn has_enabled_thinking_flag(args: &[String]) -> bool {
     false
 }
 
+static PLAN_MODE_CACHE: OnceLock<Mutex<HashMap<String, Option<Vec<String>>>>> = OnceLock::new();
+
+fn is_planner_role(role: &str) -> bool {
+    role.trim().eq_ignore_ascii_case("planner")
+}
+
+fn has_plan_mode_arg(args: &[String]) -> bool {
+    if args
+        .first()
+        .is_some_and(|first| first.eq_ignore_ascii_case("plan"))
+    {
+        return true;
+    }
+
+    for (idx, arg) in args.iter().enumerate() {
+        if arg.eq_ignore_ascii_case("--plan") || arg.eq_ignore_ascii_case("--plan-mode") {
+            return true;
+        }
+
+        if arg.eq_ignore_ascii_case("--mode") {
+            if args
+                .get(idx + 1)
+                .is_some_and(|next| next.eq_ignore_ascii_case("plan"))
+            {
+                return true;
+            }
+        }
+
+        if let Some((flag, value)) = arg.split_once('=') {
+            if flag.eq_ignore_ascii_case("--mode") && value.eq_ignore_ascii_case("plan") {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn plan_mode_candidates() -> Vec<Vec<String>> {
+    vec![
+        vec!["--plan".to_string()],
+        vec!["--plan-mode".to_string()],
+        vec!["--mode".to_string(), "plan".to_string()],
+        vec!["--mode=plan".to_string()],
+    ]
+}
+
+fn plan_mode_cache_key(command_name: &str, args: &[String]) -> String {
+    format!("{command_name}|{}", args.join("\u{1f}"))
+}
+
+fn read_plan_mode_cache(cache_key: &str) -> Option<Option<Vec<String>>> {
+    let cache = PLAN_MODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = cache.lock().ok()?;
+    guard.get(cache_key).cloned()
+}
+
+fn write_plan_mode_cache(cache_key: String, value: Option<Vec<String>>) {
+    let cache = PLAN_MODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cache_key, value);
+    }
+}
+
+fn append_plan_mode_args(base_args: &[String], plan_args: &[String]) -> Vec<String> {
+    let mut resolved = base_args.to_vec();
+    for arg in plan_args {
+        resolved.push(arg.clone());
+    }
+    resolved
+}
+
+fn has_unknown_argument_indicators(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    const UNKNOWN_PATTERNS: &[&str] = &[
+        "unknown option",
+        "unknown argument",
+        "unexpected argument",
+        "invalid option",
+        "unrecognized option",
+        "unrecognized argument",
+    ];
+    UNKNOWN_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+async fn supports_plan_mode_candidate(
+    command: &str,
+    base_args: &[String],
+    candidate: &[String],
+) -> bool {
+    let mut probe = Command::new(command);
+    probe.args(base_args);
+    probe.args(candidate);
+    probe.arg("--help");
+    probe.stdin(Stdio::null());
+    probe.stdout(Stdio::piped());
+    probe.stderr(Stdio::piped());
+    probe.kill_on_drop(true);
+
+    let output = match tokio::time::timeout(Duration::from_secs(5), probe.output()).await {
+        Ok(Ok(output)) => output,
+        _ => return false,
+    };
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    if has_unknown_argument_indicators(&combined) {
+        return false;
+    }
+
+    if output.status.success() {
+        return true;
+    }
+
+    combined.to_ascii_lowercase().contains("usage")
+}
+
+async fn resolve_plan_mode_args_if_supported(
+    command: &str,
+    command_name: &str,
+    base_args: &[String],
+    role: &str,
+) -> Vec<String> {
+    if !is_planner_role(role) || has_plan_mode_arg(base_args) {
+        return base_args.to_vec();
+    }
+
+    let cache_key = plan_mode_cache_key(command_name, base_args);
+    if let Some(cached) = read_plan_mode_cache(&cache_key) {
+        return match cached {
+            Some(plan_args) => append_plan_mode_args(base_args, &plan_args),
+            None => base_args.to_vec(),
+        };
+    }
+
+    for candidate in plan_mode_candidates() {
+        if supports_plan_mode_candidate(command, base_args, &candidate).await {
+            println!(
+                "  ... local CLI planner mode enabled: command='{}' args={:?}",
+                command_name, candidate
+            );
+            write_plan_mode_cache(cache_key, Some(candidate.clone()));
+            return append_plan_mode_args(base_args, &candidate);
+        }
+    }
+
+    write_plan_mode_cache(cache_key, None);
+    base_args.to_vec()
+}
+
 #[async_trait]
 impl Agent for LocalCliAgent {
     async fn respond(&self, context: &AgentContext) -> anyhow::Result<AgentResponse> {
         let prompt = self.build_prompt(context);
         let request_preview = summarize_request(&context.instruction, 120);
         let command_name = normalize_command_name(&self.command);
+        let resolved_args = resolve_plan_mode_args_if_supported(
+            &self.command,
+            &command_name,
+            &self.args,
+            &context.role,
+        )
+        .await;
         let thinking_enabled =
-            is_opencode_command(&command_name) && has_enabled_thinking_flag(&self.args);
+            is_opencode_command(&command_name) && has_enabled_thinking_flag(&resolved_args);
 
         let mut cmd = Command::new(&self.command);
-        cmd.args(&self.args);
+        cmd.args(&resolved_args);
         if let Some(permission) =
             opencode_permission_env_value(&command_name, self.ensure_no_permission_flags)
         {
@@ -794,6 +957,21 @@ mod tests {
         assert_eq!(super::extract_thinking_update(line), None);
     }
 
+    #[test]
+    fn detects_planner_role_and_plan_mode_flags() {
+        assert!(super::is_planner_role("planner"));
+        assert!(super::is_planner_role("Planner"));
+        assert!(!super::is_planner_role("implementer"));
+
+        assert!(super::has_plan_mode_arg(&["--plan".to_string()]));
+        assert!(super::has_plan_mode_arg(&[
+            "--mode".to_string(),
+            "plan".to_string()
+        ]));
+        assert!(super::has_plan_mode_arg(&["--mode=plan".to_string()]));
+        assert!(!super::has_plan_mode_arg(&["--mode".to_string(), "run".to_string()]));
+    }
+
     #[cfg(windows)]
     fn echo_stdin_command() -> &'static str {
         "cmd"
@@ -814,6 +992,7 @@ mod tests {
                 name: "sample.md".to_string(),
                 content: "context body".to_string(),
             }],
+            role: "implementer".to_string(),
             instruction: "say hello".to_string(),
         };
 

@@ -60,6 +60,7 @@ pub async fn execute(
                 content: role,
             },
         ],
+        role: "planner".to_string(),
         instruction: format!(
             "Review the goal and current status. Create or update the task plan.\n\
              Current cycle: {}\n\

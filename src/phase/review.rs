@@ -62,6 +62,7 @@ pub async fn execute(
                     .unwrap_or_else(|| "No changes detected.".into()),
             },
         ],
+        role: "reviewer".to_string(),
         instruction: "Review the recent implementation changes. Provide findings in the format:\n\
              ```\n\
              Findings: High / Med / Low\n\

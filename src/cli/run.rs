@@ -726,6 +726,7 @@ async fn apply_spec_bootstrap(
                 content: status.content.clone(),
             },
         ],
+        role: "planner".to_string(),
         instruction,
     };
 

@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct AgentContext {
     /// Content of context files (goal.md, status.md, role definition, etc.)
     pub context_files: Vec<ContextFile>,
+    /// Logical role for this request (planner, implementer, reviewer, ...)
+    pub role: String,
     /// The instruction for this specific phase
     pub instruction: String,
 }
