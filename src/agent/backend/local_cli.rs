@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -128,8 +128,45 @@ fn should_retry_spawn_with_stdin(
     error.raw_os_error() == Some(WINDOWS_FILENAME_OR_EXTENSION_TOO_LONG_ERROR)
 }
 
-fn should_prefer_stdin_before_spawn(command_name: &str, prompt_via_stdin: bool) -> bool {
+fn should_use_opencode_file_prompt(command_name: &str, prompt_via_stdin: bool) -> bool {
     cfg!(windows) && !prompt_via_stdin && is_opencode_command(command_name)
+}
+
+struct TempPromptFile {
+    path: PathBuf,
+}
+
+impl TempPromptFile {
+    fn create(prefix: &str, prompt: &str) -> anyhow::Result<Self> {
+        let mut path = std::env::temp_dir();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        path.push(format!("{prefix}-{}-{now}.md", std::process::id()));
+        std::fs::write(&path, prompt).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to write temporary prompt file '{}': {}",
+                path.display(),
+                e
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    fn arg_value(&self) -> String {
+        self.path.to_string_lossy().into_owned()
+    }
+
+    fn display_path(&self) -> String {
+        self.path.display().to_string()
+    }
+}
+
+impl Drop for TempPromptFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn ensure_codex_no_permission_args(args: &mut Vec<String>) {
@@ -284,6 +321,47 @@ fn has_unknown_argument_indicators(output: &str) -> bool {
     UNKNOWN_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
+fn candidate_flag_token(candidate: &[String]) -> Option<&str> {
+    let first = candidate.first()?;
+    let flag = first.split('=').next().unwrap_or(first);
+    if flag.starts_with("--") {
+        Some(flag)
+    } else {
+        None
+    }
+}
+
+fn is_flag_token_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
+}
+
+fn contains_flag_token(output: &str, flag: &str) -> bool {
+    if flag.is_empty() {
+        return false;
+    }
+
+    let haystack = output.as_bytes();
+    let needle = flag.as_bytes();
+    if needle.len() > haystack.len() {
+        return false;
+    }
+
+    let mut index = 0;
+    while index + needle.len() <= haystack.len() {
+        if &haystack[index..index + needle.len()] == needle {
+            let before_ok = index == 0 || !is_flag_token_char(haystack[index - 1]);
+            let after_index = index + needle.len();
+            let after_ok = after_index == haystack.len() || !is_flag_token_char(haystack[after_index]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        index += 1;
+    }
+
+    false
+}
+
 async fn supports_plan_mode_candidate(
     command: &str,
     base_args: &[String],
@@ -311,6 +389,12 @@ async fn supports_plan_mode_candidate(
 
     if has_unknown_argument_indicators(&combined) {
         return false;
+    }
+
+    if let Some(flag) = candidate_flag_token(candidate) {
+        if !contains_flag_token(&combined, flag) {
+            return false;
+        }
     }
 
     if output.status.success() {
@@ -410,24 +494,33 @@ impl Agent for LocalCliAgent {
         .await;
         let thinking_enabled =
             is_opencode_command(&command_name) && has_enabled_thinking_flag(&resolved_args);
-        let mut effective_prompt_via_stdin =
-            self.prompt_via_stdin || should_prefer_stdin_before_spawn(&command_name, self.prompt_via_stdin);
-        if effective_prompt_via_stdin && !self.prompt_via_stdin {
+        let mut effective_prompt_via_stdin = self.prompt_via_stdin;
+        let mut effective_args = resolved_args.clone();
+        let mut prompt_for_cli = prompt.clone();
+        let mut _prompt_file_guard: Option<TempPromptFile> = None;
+        if should_use_opencode_file_prompt(&command_name, self.prompt_via_stdin) {
+            let prompt_file = TempPromptFile::create("orcha-opencode-prompt", &prompt)?;
+            let prompt_file_path = prompt_file.arg_value();
+            effective_args.push("--file".to_string());
+            effective_args.push(prompt_file_path.clone());
+            prompt_for_cli = "Read the attached file and follow its instructions exactly.".to_string();
             println!(
-                "  ... local CLI prompt mode switch: command='{}' reason='preemptive stdin for opencode on Windows' request=\"{}\"",
+                "  ... local CLI prompt mode switch: command='{}' reason='opencode file attachment on Windows' file='{}' request=\"{}\"",
                 self.command,
+                summarize_request(&prompt_file.display_path(), 120),
                 request_preview
             );
+            _prompt_file_guard = Some(prompt_file);
         }
         let mut cmd = Command::new(&self.command);
         configure_cli_command(
             &mut cmd,
             &command_name,
-            &resolved_args,
+            &effective_args,
             self.ensure_no_permission_flags,
             self.model_arg.as_deref(),
             &self.model,
-            &prompt,
+            &prompt_for_cli,
             effective_prompt_via_stdin,
         );
 
@@ -450,11 +543,11 @@ impl Agent for LocalCliAgent {
                     configure_cli_command(
                         &mut retry_cmd,
                         &command_name,
-                        &resolved_args,
+                        &effective_args,
                         self.ensure_no_permission_flags,
                         self.model_arg.as_deref(),
                         &self.model,
-                        &prompt,
+                        &prompt_for_cli,
                         true,
                     );
                     retry_cmd.spawn().map_err(|e| {
@@ -474,7 +567,7 @@ impl Agent for LocalCliAgent {
         if effective_prompt_via_stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 stdin
-                    .write_all(prompt.as_bytes())
+                    .write_all(prompt_for_cli.as_bytes())
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to write prompt to CLI stdin: {}", e))?;
             }
@@ -1015,17 +1108,26 @@ mod tests {
     }
 
     #[test]
-    fn preemptively_prefers_stdin_for_opencode_only_on_windows() {
+    fn uses_opencode_file_prompt_only_on_windows_arg_mode() {
         assert_eq!(
-            super::should_prefer_stdin_before_spawn("opencode", false),
+            super::should_use_opencode_file_prompt("opencode", false),
             cfg!(windows)
         );
         assert_eq!(
-            super::should_prefer_stdin_before_spawn("opencode-cli", false),
+            super::should_use_opencode_file_prompt("opencode-cli", false),
             cfg!(windows)
         );
-        assert!(!super::should_prefer_stdin_before_spawn("opencode", true));
-        assert!(!super::should_prefer_stdin_before_spawn("codex", false));
+        assert!(!super::should_use_opencode_file_prompt("opencode", true));
+        assert!(!super::should_use_opencode_file_prompt("codex", false));
+    }
+
+    #[test]
+    fn detects_candidate_flag_token_in_help_output_without_partial_matches() {
+        let help = "Options:\n  --model  model to use\n  --plan   plan mode";
+        assert!(super::contains_flag_token(help, "--plan"));
+        assert!(super::contains_flag_token(help, "--model"));
+        assert!(!super::contains_flag_token(help, "--mode"));
+        assert!(!super::contains_flag_token(help, "--pla"));
     }
 
     #[test]
