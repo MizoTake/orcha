@@ -106,6 +106,7 @@ fn is_opencode_command(command_name: &str) -> bool {
 }
 
 const OPENCODE_PERMISSION_ALLOW_ALL: &str = r#"{"*":"allow","doom_loop":"allow"}"#;
+const WINDOWS_FILENAME_OR_EXTENSION_TOO_LONG_ERROR: i32 = 206;
 
 fn opencode_permission_env_value(command_name: &str, enabled: bool) -> Option<&'static str> {
     if enabled && is_opencode_command(command_name) {
@@ -113,6 +114,22 @@ fn opencode_permission_env_value(command_name: &str, enabled: bool) -> Option<&'
     } else {
         None
     }
+}
+
+fn should_retry_spawn_with_stdin(
+    command_name: &str,
+    prompt_via_stdin: bool,
+    error: &io::Error,
+) -> bool {
+    if prompt_via_stdin || !is_opencode_command(command_name) {
+        return false;
+    }
+
+    error.raw_os_error() == Some(WINDOWS_FILENAME_OR_EXTENSION_TOO_LONG_ERROR)
+}
+
+fn should_prefer_stdin_before_spawn(command_name: &str, prompt_via_stdin: bool) -> bool {
+    cfg!(windows) && !prompt_via_stdin && is_opencode_command(command_name)
 }
 
 fn ensure_codex_no_permission_args(args: &mut Vec<String>) {
@@ -336,6 +353,48 @@ async fn resolve_plan_mode_args_if_supported(
     base_args.to_vec()
 }
 
+fn configure_cli_command(
+    cmd: &mut Command,
+    command_name: &str,
+    args: &[String],
+    ensure_no_permission_flags: bool,
+    model_arg: Option<&str>,
+    model: &str,
+    prompt: &str,
+    prompt_via_stdin: bool,
+) {
+    cmd.args(args);
+    if let Some(permission) = opencode_permission_env_value(command_name, ensure_no_permission_flags)
+    {
+        cmd.env("OPENCODE_PERMISSION", permission);
+    }
+
+    if let Some(model_arg) = model_arg {
+        if model.trim().is_empty() {
+            // When model is omitted in orcha.yml, let the CLI use its own default model.
+            // Do not append model flag/value in this case.
+        } else {
+            cmd.arg(model_arg);
+            cmd.arg(model);
+        }
+    }
+
+    if prompt_via_stdin {
+        cmd.stdin(Stdio::piped());
+    } else {
+        // opencode run uses positional message parsing; prompts beginning with '-' can be
+        // misread as options unless we terminate option parsing explicitly.
+        if is_opencode_command(command_name) {
+            cmd.arg("--");
+        }
+        cmd.arg(prompt);
+    }
+
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+}
+
 #[async_trait]
 impl Agent for LocalCliAgent {
     async fn respond(&self, context: &AgentContext) -> anyhow::Result<AgentResponse> {
@@ -351,45 +410,68 @@ impl Agent for LocalCliAgent {
         .await;
         let thinking_enabled =
             is_opencode_command(&command_name) && has_enabled_thinking_flag(&resolved_args);
-
+        let mut effective_prompt_via_stdin =
+            self.prompt_via_stdin || should_prefer_stdin_before_spawn(&command_name, self.prompt_via_stdin);
+        if effective_prompt_via_stdin && !self.prompt_via_stdin {
+            println!(
+                "  ... local CLI prompt mode switch: command='{}' reason='preemptive stdin for opencode on Windows' request=\"{}\"",
+                self.command,
+                request_preview
+            );
+        }
         let mut cmd = Command::new(&self.command);
-        cmd.args(&resolved_args);
-        if let Some(permission) =
-            opencode_permission_env_value(&command_name, self.ensure_no_permission_flags)
-        {
-            cmd.env("OPENCODE_PERMISSION", permission);
-        }
-        if let Some(model_arg) = &self.model_arg {
-            if self.model.trim().is_empty() {
-                // When model is omitted in orcha.yml, let the CLI use its own default model.
-                // Do not append model flag/value in this case.
-            } else {
-                cmd.arg(model_arg);
-                cmd.arg(&self.model);
+        configure_cli_command(
+            &mut cmd,
+            &command_name,
+            &resolved_args,
+            self.ensure_no_permission_flags,
+            self.model_arg.as_deref(),
+            &self.model,
+            &prompt,
+            effective_prompt_via_stdin,
+        );
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(spawn_error) => {
+                if should_retry_spawn_with_stdin(
+                    &command_name,
+                    effective_prompt_via_stdin,
+                    &spawn_error,
+                ) {
+                    effective_prompt_via_stdin = true;
+                    println!(
+                        "  ... local CLI spawn retry: command='{}' reason='os error {} (arg too long)' prompt_mode=stdin request=\"{}\"",
+                        self.command,
+                        WINDOWS_FILENAME_OR_EXTENSION_TOO_LONG_ERROR,
+                        request_preview
+                    );
+                    let mut retry_cmd = Command::new(&self.command);
+                    configure_cli_command(
+                        &mut retry_cmd,
+                        &command_name,
+                        &resolved_args,
+                        self.ensure_no_permission_flags,
+                        self.model_arg.as_deref(),
+                        &self.model,
+                        &prompt,
+                        true,
+                    );
+                    retry_cmd.spawn().map_err(|e| {
+                        anyhow::anyhow!("Failed to start CLI '{}': {}", self.command, e)
+                    })?
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Failed to start CLI '{}': {}",
+                        self.command,
+                        spawn_error
+                    ));
+                }
             }
-        }
-
-        if self.prompt_via_stdin {
-            cmd.stdin(Stdio::piped());
-        } else {
-            // opencode run uses positional message parsing; prompts beginning with '-' can be
-            // misread as options unless we terminate option parsing explicitly.
-            if is_opencode_command(&command_name) {
-                cmd.arg("--");
-            }
-            cmd.arg(&prompt);
-        }
-
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to start CLI '{}': {}", self.command, e))?;
+        };
         let child_pid = child.id();
 
-        if self.prompt_via_stdin {
+        if effective_prompt_via_stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 stdin
                     .write_all(prompt.as_bytes())
@@ -402,7 +484,7 @@ impl Agent for LocalCliAgent {
             child,
             &self.command,
             child_pid,
-            self.prompt_via_stdin,
+            effective_prompt_via_stdin,
             &self.model,
             &request_preview,
             thinking_enabled,
@@ -918,6 +1000,32 @@ mod tests {
         );
         assert_eq!(super::opencode_permission_env_value("opencode", false), None);
         assert_eq!(super::opencode_permission_env_value("codex", true), None);
+    }
+
+    #[test]
+    fn retries_only_on_opencode_with_windows_206_and_arg_mode() {
+        let err_206 = std::io::Error::from_raw_os_error(206);
+        let err_other = std::io::Error::from_raw_os_error(2);
+
+        assert!(super::should_retry_spawn_with_stdin("opencode", false, &err_206));
+        assert!(super::should_retry_spawn_with_stdin("opencode-cli", false, &err_206));
+        assert!(!super::should_retry_spawn_with_stdin("opencode", true, &err_206));
+        assert!(!super::should_retry_spawn_with_stdin("codex", false, &err_206));
+        assert!(!super::should_retry_spawn_with_stdin("opencode", false, &err_other));
+    }
+
+    #[test]
+    fn preemptively_prefers_stdin_for_opencode_only_on_windows() {
+        assert_eq!(
+            super::should_prefer_stdin_before_spawn("opencode", false),
+            cfg!(windows)
+        );
+        assert_eq!(
+            super::should_prefer_stdin_before_spawn("opencode-cli", false),
+            cfg!(windows)
+        );
+        assert!(!super::should_prefer_stdin_before_spawn("opencode", true));
+        assert!(!super::should_prefer_stdin_before_spawn("codex", false));
     }
 
     #[test]
