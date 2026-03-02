@@ -19,7 +19,7 @@ pub async fn execute(
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let tasks = status.tasks()?;
     let machine = MachineConfig::load(orch_dir)?;
-    let max_cycles = machine.execution.max_cycles.max(1);
+    let max_cycles = machine.execution.max_cycles;
     let criteria_count = machine.execution.acceptance_criteria.len();
 
     let verify_passed = status.content.contains("Overall: PASS");
@@ -46,7 +46,7 @@ pub async fn execute(
 
     // Check stop conditions
     let next_cycle = status.frontmatter.cycle + 1;
-    if next_cycle >= max_cycles {
+    if max_cycles > 0 && next_cycle >= max_cycles {
         status_log::append(
             &log_path,
             "decide",

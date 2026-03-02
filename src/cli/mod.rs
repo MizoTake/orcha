@@ -41,6 +41,10 @@ pub enum Command {
         /// Specification file path to bootstrap goal/tasks before starting.
         #[arg(long)]
         spec: Option<PathBuf>,
+
+        /// Reset status to cycle 0 / briefing before execution.
+        #[arg(long, default_value_t = false)]
+        reset_cycle: bool,
     },
 
     /// Display current status
@@ -80,6 +84,7 @@ mod tests {
             Command::Run {
                 enforce_lock: false,
                 spec: None,
+                reset_cycle: false,
             }
         ));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
@@ -93,6 +98,7 @@ mod tests {
             Command::Run {
                 enforce_lock: true,
                 spec: None,
+                reset_cycle: false,
             }
         ));
     }
@@ -104,7 +110,21 @@ mod tests {
             cli.command,
             Command::Run {
                 enforce_lock: false,
-                spec: Some(_)
+                spec: Some(_),
+                reset_cycle: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_accepts_reset_cycle_flag_for_run() {
+        let cli = Cli::parse_from(["orcha", "run", "--reset-cycle"]);
+        assert!(matches!(
+            cli.command,
+            Command::Run {
+                enforce_lock: false,
+                spec: None,
+                reset_cycle: true,
             }
         ));
     }

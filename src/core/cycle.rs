@@ -108,7 +108,7 @@ pub enum StopReason {
 impl fmt::Display for StopReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StopReason::MaxCyclesReached => write!(f, "Maximum cycles (5) reached"),
+            StopReason::MaxCyclesReached => write!(f, "Maximum cycles reached"),
             StopReason::RepeatedFailureNoPaid => {
                 write!(f, "Same failure repeated and no paid model available")
             }
@@ -119,7 +119,7 @@ impl fmt::Display for StopReason {
     }
 }
 
-pub const MAX_CYCLES: u32 = 5;
+pub const MAX_CYCLES: u32 = 0;
 
 #[cfg(test)]
 mod tests {

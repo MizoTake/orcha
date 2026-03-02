@@ -29,6 +29,7 @@ pub async fn execute(
     config: &AppConfig,
     allow_concurrent: bool,
     spec_path: Option<&Path>,
+    reset_cycle: bool,
 ) -> anyhow::Result<()> {
     let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
@@ -39,14 +40,22 @@ pub async fn execute(
     }
 
     let mut status = StatusFile::load(&status_path).await?;
+    if reset_cycle {
+        reset_status_to_cycle_zero(&mut status);
+        status.save(&status_path).await?;
+        println!(
+            "  {} reset-cycle: status reset to cycle=0 phase=briefing",
+            "▶".green()
+        );
+    }
 
     let mut machine = MachineConfig::load(orch_dir)?;
-    let max_cycles = machine.execution.max_cycles.max(1);
+    let max_cycles = machine.execution.max_cycles;
     let max_consecutive_verify_failures = machine.execution.max_consecutive_verify_failures.max(1);
     let mut consecutive_verify_failures = 0u32;
 
     // Check stop conditions
-    if status.frontmatter.cycle >= max_cycles {
+    if max_cycles > 0 && status.frontmatter.cycle >= max_cycles {
         return Err(OrchaError::StopCondition {
             reason: StopReason::MaxCyclesReached.to_string(),
         }
@@ -97,7 +106,7 @@ pub async fn execute(
     let mut disabled_agents_by_cli_limit: HashSet<AgentKind> = HashSet::new();
     loop {
         // Check stop conditions before each phase step.
-        if status.frontmatter.cycle >= max_cycles {
+        if max_cycles > 0 && status.frontmatter.cycle >= max_cycles {
             terminal_error = Some(
                 OrchaError::StopCondition {
                     reason: StopReason::MaxCyclesReached.to_string(),
@@ -488,6 +497,13 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+fn reset_status_to_cycle_zero(status: &mut StatusFile) {
+    status.frontmatter.cycle = 0;
+    status.frontmatter.phase = Phase::Briefing;
+    status.frontmatter.locks.active_task = None;
+    status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
 }
 
 async fn execute_phase_with_heartbeat<F>(
@@ -1325,6 +1341,7 @@ mod tests {
         build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
         lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid, parse_spec_bootstrap_response,
         parse_task_breakdown_response, parse_verify_status_counts, process_exists,
+        reset_status_to_cycle_zero,
         release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
     };
     use crate::agent::AgentKind;
@@ -1365,6 +1382,21 @@ mod tests {
         assert_eq!(parse_lock_pid("orch-1234"), Some(1234));
         assert_eq!(parse_lock_pid("orch-abc"), None);
         assert_eq!(parse_lock_pid("other-1234"), None);
+    }
+
+    #[test]
+    fn reset_status_to_cycle_zero_sets_briefing_and_clears_active_task() {
+        let mut status = StatusFile::from_str(
+            "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 3\nphase: review\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 1\n  paid_calls_limit: 10\nlocks:\n  writer: orch-9999\n  active_task: T3\n---\n\n## Goal\n\nBuild the thing.\n",
+        )
+        .expect("status should parse");
+
+        reset_status_to_cycle_zero(&mut status);
+
+        assert_eq!(status.frontmatter.cycle, 0);
+        assert_eq!(status.frontmatter.phase.to_string(), "briefing");
+        assert_eq!(status.frontmatter.locks.active_task, None);
+        assert_eq!(status.frontmatter.locks.writer, Some("orch-9999".to_string()));
     }
 
     #[test]

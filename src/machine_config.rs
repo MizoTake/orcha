@@ -796,7 +796,7 @@ execution:
     #[test]
     fn default_execution_limits_are_set() {
         let cfg = MachineConfig::default();
-        assert!(cfg.execution.max_cycles > 0);
+        assert_eq!(cfg.execution.max_cycles, 0);
         assert!(cfg.execution.phase_timeout_seconds > 0);
         assert!(cfg.execution.max_consecutive_verify_failures > 0);
         assert_eq!(cfg.execution.human_escalation.on_consecutive_failures, 0);

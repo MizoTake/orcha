@@ -66,7 +66,7 @@ execution:
     mixins: []         # e.g. [{ from: "quality_gate", fields: ["review_agent", "security_gate"] }]
   cli_limit:
     disable_agent_on_limit: true # true: claude/codex CLI が limit/quota エラー時にその run 中は無効化
-  max_cycles: 20 # run全体の最大サイクル数
+  max_cycles: 0 # run全体の最大サイクル数（0は無制限）
   phase_timeout_seconds: 21600 # 各phaseのタイムアウト（秒）
   max_consecutive_verify_failures: 3 # verify連続失敗で停止
   human_escalation:

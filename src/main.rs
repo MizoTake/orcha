@@ -79,9 +79,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init => {
             orcha::cli::init::execute(&cli.orch_dir).await?;
         }
-        Command::Run { enforce_lock, spec } => {
+        Command::Run {
+            enforce_lock,
+            spec,
+            reset_cycle,
+        } => {
             let config = orcha::config::AppConfig::from_orch_dir(&cli.orch_dir)?;
-            orcha::cli::run::execute(&cli.orch_dir, &config, !enforce_lock, spec.as_deref()).await?;
+            orcha::cli::run::execute(
+                &cli.orch_dir,
+                &config,
+                !enforce_lock,
+                spec.as_deref(),
+                reset_cycle,
+            )
+            .await?;
         }
         Command::Status => {
             orcha::cli::status::execute(&cli.orch_dir).await?;
