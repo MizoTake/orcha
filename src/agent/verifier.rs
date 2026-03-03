@@ -87,6 +87,149 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── truncate ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_returns_original_when_within_limit() {
+        assert_eq!(truncate_for_test("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_returns_original_at_exact_limit() {
+        assert_eq!(truncate_for_test("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_appends_suffix_when_over_limit() {
+        let result = truncate_for_test("hello world", 5);
+        assert_eq!(result, "hello... (truncated)");
+    }
+
+    #[test]
+    fn truncate_empty_string_is_unchanged() {
+        assert_eq!(truncate_for_test("", 10), "");
+    }
+
+    // ── format_result ────────────────────────────────────────────────────────
+
+    fn make_result(passed: bool) -> VerifyResult {
+        VerifyResult {
+            passed,
+            summary: if passed {
+                "All 1 commands passed".to_string()
+            } else {
+                "1/1 commands failed".to_string()
+            },
+            command_results: vec![CommandResult {
+                command: "cargo test".to_string(),
+                exit_code: if passed { 0 } else { 1 },
+                stdout: "test output".to_string(),
+                stderr: String::new(),
+                passed,
+            }],
+        }
+    }
+
+    #[test]
+    fn format_result_includes_command_and_status() {
+        let result = make_result(true);
+        let formatted = format_result(&result);
+        assert!(formatted.contains("cargo test"));
+        assert!(formatted.contains("PASS"));
+        assert!(formatted.contains("Overall: PASS"));
+    }
+
+    #[test]
+    fn format_result_shows_fail_for_failed_command() {
+        let result = make_result(false);
+        let formatted = format_result(&result);
+        assert!(formatted.contains("FAIL"));
+        assert!(formatted.contains("Overall: FAIL"));
+    }
+
+    #[test]
+    fn format_result_includes_stdout_when_non_empty() {
+        let result = make_result(true);
+        let formatted = format_result(&result);
+        assert!(formatted.contains("test output"));
+    }
+
+    #[test]
+    fn format_result_omits_stdout_section_when_empty() {
+        let mut result = make_result(true);
+        result.command_results[0].stdout = String::new();
+        let formatted = format_result(&result);
+        assert!(!formatted.contains("Stdout:"));
+    }
+
+    // ── run ──────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_empty_command_list_returns_all_passed() {
+        let result = run(&[]).await.expect("run should succeed");
+        assert!(result.passed);
+        assert!(result.command_results.is_empty());
+        assert!(result.summary.contains("0"));
+    }
+
+    #[tokio::test]
+    async fn run_skips_empty_and_comment_lines() {
+        let commands = vec!["".to_string(), "# just a comment".to_string()];
+        let result = run(&commands).await.expect("run should succeed");
+        assert!(result.passed);
+        assert!(result.command_results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_passing_command_reports_pass() {
+        #[cfg(windows)]
+        let cmd = "exit 0";
+        #[cfg(not(windows))]
+        let cmd = "true";
+
+        let result = run(&[cmd.to_string()]).await.expect("run should succeed");
+        assert!(result.passed);
+        assert_eq!(result.command_results.len(), 1);
+        assert!(result.command_results[0].passed);
+        assert_eq!(result.command_results[0].exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn run_failing_command_reports_fail() {
+        #[cfg(windows)]
+        let cmd = "exit 1";
+        #[cfg(not(windows))]
+        let cmd = "false";
+
+        let result = run(&[cmd.to_string()]).await.expect("run should succeed");
+        assert!(!result.passed);
+        assert!(!result.command_results[0].passed);
+        assert_ne!(result.command_results[0].exit_code, 0);
+        assert!(result.summary.contains("1/1 commands failed"));
+    }
+
+    #[tokio::test]
+    async fn run_truncates_long_stdout() {
+        #[cfg(windows)]
+        let cmd = format!("python -c \"print('x' * 3000)\"");
+        #[cfg(not(windows))]
+        let cmd = "printf '%3000s' | tr ' ' 'x'".to_string();
+
+        let result = run(&[cmd]).await.expect("run should succeed");
+        if let Some(r) = result.command_results.first() {
+            assert!(r.stdout.len() <= 2000 + "... (truncated)".len());
+        }
+    }
+}
+
+pub(crate) fn truncate_for_test(s: &str, max_len: usize) -> String {
+    truncate(s, max_len)
+}
+
 /// Format verify result as markdown for logging/display.
 pub fn format_result(result: &VerifyResult) -> String {
     let mut out = String::new();

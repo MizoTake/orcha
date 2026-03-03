@@ -149,4 +149,120 @@ mod tests {
         status.advance_phase();
         assert_eq!(status.frontmatter.phase, Phase::Impl);
     }
+
+    #[test]
+    fn start_new_cycle_increments_cycle_and_resets_to_briefing() {
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+        assert_eq!(status.frontmatter.cycle, 1);
+        assert_eq!(status.frontmatter.phase, Phase::Plan);
+
+        status.start_new_cycle();
+
+        assert_eq!(status.frontmatter.cycle, 2);
+        assert_eq!(status.frontmatter.phase, Phase::Briefing);
+    }
+
+    #[test]
+    fn start_new_cycle_increments_monotonically() {
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+        status.start_new_cycle();
+        status.start_new_cycle();
+        assert_eq!(status.frontmatter.cycle, 3);
+    }
+
+    #[test]
+    fn replace_task_table_updates_existing_table() {
+        use crate::core::task::{Task, TaskState};
+
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+        let new_tasks = vec![
+            Task {
+                id: "T1".to_string(),
+                title: "Setup".to_string(),
+                state: TaskState::Done,
+                owner: "local_llm".to_string(),
+                evidence: "ok".to_string(),
+                notes: String::new(),
+            },
+            Task {
+                id: "T2".to_string(),
+                title: "Build".to_string(),
+                state: TaskState::Done,
+                owner: "claude".to_string(),
+                evidence: "done".to_string(),
+                notes: String::new(),
+            },
+        ];
+
+        status.replace_task_table(&new_tasks);
+
+        let tasks = status.tasks().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1].state, TaskState::Done);
+        assert_eq!(tasks[1].owner, "claude");
+    }
+
+    #[test]
+    fn replace_task_table_no_op_when_table_absent() {
+        use crate::core::task::{Task, TaskState};
+
+        let raw = "---\nrun_id: r\nprofile: local_only\ncycle: 0\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 0\nlocks:\n  writer: null\n  active_task: null\n---\n\nNo task table here.\n";
+        let mut status = StatusFile::from_str(raw).unwrap();
+        let original_content = status.content.clone();
+
+        status.replace_task_table(&[Task {
+            id: "T1".to_string(),
+            title: "Task".to_string(),
+            state: TaskState::Todo,
+            owner: String::new(),
+            evidence: String::new(),
+            notes: String::new(),
+        }]);
+
+        // Content should be unchanged because there was no table to replace.
+        assert_eq!(status.content, original_content);
+    }
+
+    #[test]
+    fn update_task_modifies_matching_row() {
+        use crate::core::task::{Task, TaskState};
+
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+        let updated = Task {
+            id: "T2".to_string(),
+            title: "Build".to_string(),
+            state: TaskState::Done,
+            owner: "local_llm".to_string(),
+            evidence: "verified".to_string(),
+            notes: String::new(),
+        };
+
+        status.update_task(&updated).unwrap();
+
+        let tasks = status.tasks().unwrap();
+        let t2 = tasks.iter().find(|t| t.id == "T2").expect("T2 should exist");
+        assert_eq!(t2.state, TaskState::Done);
+        assert_eq!(t2.evidence, "verified");
+    }
+
+    #[test]
+    fn update_task_leaves_unrelated_rows_unchanged() {
+        use crate::core::task::{Task, TaskState};
+
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+        let updated = Task {
+            id: "T2".to_string(),
+            title: "Build".to_string(),
+            state: TaskState::Done,
+            owner: String::new(),
+            evidence: String::new(),
+            notes: String::new(),
+        };
+
+        status.update_task(&updated).unwrap();
+
+        let tasks = status.tasks().unwrap();
+        let t1 = tasks.iter().find(|t| t.id == "T1").expect("T1 should exist");
+        assert_eq!(t1.state, TaskState::Done); // unchanged from sample
+    }
 }

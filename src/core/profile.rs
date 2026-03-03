@@ -513,6 +513,145 @@ mod tests {
         assert!(parsed.is_none());
     }
 
+    // ── extract_first_u32 ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_first_u32_parses_leading_number() {
+        assert_eq!(super::extract_first_u32("3 failures"), Some(3));
+    }
+
+    #[test]
+    fn extract_first_u32_parses_number_surrounded_by_text() {
+        assert_eq!(super::extract_first_u32("after 5 retries"), Some(5));
+    }
+
+    #[test]
+    fn extract_first_u32_returns_none_when_no_digit() {
+        assert_eq!(super::extract_first_u32("no number here"), None);
+    }
+
+    #[test]
+    fn extract_first_u32_returns_none_for_empty_input() {
+        assert_eq!(super::extract_first_u32(""), None);
+    }
+
+    // ── parse_agent_preference ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_agent_preference_recognizes_claude_aliases() {
+        assert_eq!(
+            super::parse_agent_preference("claude"),
+            Some(AgentPreference::Claude)
+        );
+        assert_eq!(
+            super::parse_agent_preference("claude_code"),
+            Some(AgentPreference::Claude)
+        );
+    }
+
+    #[test]
+    fn parse_agent_preference_recognizes_local_llm_aliases() {
+        assert_eq!(
+            super::parse_agent_preference("local_llm"),
+            Some(AgentPreference::LocalLlm)
+        );
+        assert_eq!(
+            super::parse_agent_preference("opencode"),
+            Some(AgentPreference::LocalLlm)
+        );
+    }
+
+    #[test]
+    fn parse_agent_preference_recognizes_codex_and_gemini() {
+        assert_eq!(
+            super::parse_agent_preference("codex"),
+            Some(AgentPreference::Codex)
+        );
+        assert_eq!(
+            super::parse_agent_preference("gemini"),
+            Some(AgentPreference::Gemini)
+        );
+    }
+
+    #[test]
+    fn parse_agent_preference_returns_none_for_unknown() {
+        assert_eq!(super::parse_agent_preference("unknown-agent"), None);
+        assert_eq!(super::parse_agent_preference(""), None);
+    }
+
+    // ── parse_escalation_rule ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_escalation_rule_arrow_notation() {
+        let rule = super::parse_escalation_rule("2 failures -> codex")
+            .expect("should parse");
+        assert_eq!(rule.failure_threshold, 2);
+        assert_eq!(rule.escalate_to, AgentPreference::Codex);
+        assert!(rule.continued_failure_to.is_none());
+    }
+
+    #[test]
+    fn parse_escalation_rule_unicode_arrow_notation() {
+        let rule = super::parse_escalation_rule("3 failures → claude")
+            .expect("should parse");
+        assert_eq!(rule.failure_threshold, 3);
+        assert_eq!(rule.escalate_to, AgentPreference::Claude);
+    }
+
+    #[test]
+    fn parse_escalation_rule_three_part_with_continued_failure() {
+        let rule = super::parse_escalation_rule("1 → codex → claude")
+            .expect("should parse");
+        assert_eq!(rule.failure_threshold, 1);
+        assert_eq!(rule.escalate_to, AgentPreference::Codex);
+        assert_eq!(rule.continued_failure_to, Some(AgentPreference::Claude));
+    }
+
+    #[test]
+    fn parse_escalation_rule_none_returns_none() {
+        assert!(super::parse_escalation_rule("None").is_none());
+        assert!(super::parse_escalation_rule("disabled").is_none());
+    }
+
+    #[test]
+    fn parse_escalation_rule_missing_arrow_returns_none() {
+        assert!(super::parse_escalation_rule("codex").is_none());
+    }
+
+    // ── is_paid_available ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_paid_available_false_for_local_only_and_opencode_no_review() {
+        assert!(!ProfileRules::from_name(ProfileName::LocalOnly).is_paid_available());
+        assert!(!ProfileRules::from_name(ProfileName::OpencodeImplNoReview).is_paid_available());
+    }
+
+    #[test]
+    fn is_paid_available_true_for_paid_profiles() {
+        for profile in &[
+            ProfileName::CheapCheckpoints,
+            ProfileName::QualityGate,
+            ProfileName::UnblockFirst,
+            ProfileName::OpencodeImplClaudeReview,
+        ] {
+            assert!(
+                ProfileRules::from_name(*profile).is_paid_available(),
+                "{profile} should have paid available"
+            );
+        }
+    }
+
+    // ── ProfileName::Display ─────────────────────────────────────────────────
+
+    #[test]
+    fn profile_name_display_roundtrips_through_from_str() {
+        for name in ProfileName::all() {
+            let s = name.to_string();
+            let parsed = ProfileName::from_str(&s);
+            assert_eq!(parsed, Some(*name), "roundtrip failed for {s}");
+        }
+    }
+
     #[test]
     fn load_custom_profile_rules_can_override_known_profile_from_file() {
         let dir = tempdir().expect("tempdir");

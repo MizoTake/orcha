@@ -156,4 +156,52 @@ mod tests {
         assert_eq!(Phase::Review.gauge(), "[####---]");
         assert_eq!(Phase::Decide.gauge(), "[#######]");
     }
+
+    #[test]
+    fn phase_display_matches_serde_rename() {
+        assert_eq!(Phase::Briefing.to_string(), "briefing");
+        assert_eq!(Phase::Plan.to_string(), "plan");
+        assert_eq!(Phase::Impl.to_string(), "impl");
+        assert_eq!(Phase::Review.to_string(), "review");
+        assert_eq!(Phase::Fix.to_string(), "fix");
+        assert_eq!(Phase::Verify.to_string(), "verify");
+        assert_eq!(Phase::Decide.to_string(), "decide");
+    }
+
+    #[test]
+    fn phase_all_returns_all_seven_phases() {
+        let all = Phase::all();
+        assert_eq!(all.len(), 7);
+        assert_eq!(all[0], Phase::Briefing);
+        assert_eq!(all[6], Phase::Decide);
+    }
+
+    #[test]
+    fn stop_reason_display_messages_are_informative() {
+        assert!(StopReason::MaxCyclesReached.to_string().contains("Maximum"));
+        assert!(StopReason::RepeatedFailureNoPaid.to_string().contains("paid"));
+        assert!(StopReason::LocalOnlyStuck.to_string().contains("stuck"));
+    }
+
+    #[test]
+    fn cycle_decision_variants_are_distinct() {
+        let decisions = [
+            CycleDecision::NextPhase,
+            CycleDecision::NextCycle,
+            CycleDecision::Done,
+            CycleDecision::Blocked(StopReason::MaxCyclesReached),
+            CycleDecision::Escalate("needs human".to_string()),
+        ];
+        // Each variant should only equal itself.
+        assert_eq!(decisions[0], CycleDecision::NextPhase);
+        assert_ne!(decisions[0], CycleDecision::NextCycle);
+        assert_eq!(
+            decisions[3],
+            CycleDecision::Blocked(StopReason::MaxCyclesReached)
+        );
+        assert_ne!(
+            decisions[3],
+            CycleDecision::Blocked(StopReason::LocalOnlyStuck)
+        );
+    }
 }

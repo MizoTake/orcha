@@ -1251,6 +1251,129 @@ mod tests {
         assert!(!super::has_plan_mode_arg(&["--mode".to_string(), "run".to_string()]));
     }
 
+    // ── normalize_command_name ───────────────────────────────────────────────
+
+    #[test]
+    fn normalize_command_name_strips_windows_extensions() {
+        assert_eq!(super::normalize_command_name("claude.exe"), "claude");
+        assert_eq!(super::normalize_command_name("codex.cmd"), "codex");
+        assert_eq!(super::normalize_command_name("opencode.bat"), "opencode");
+    }
+
+    #[test]
+    fn normalize_command_name_keeps_non_windows_names_unchanged() {
+        assert_eq!(super::normalize_command_name("claude"), "claude");
+        assert_eq!(super::normalize_command_name("opencode-cli"), "opencode-cli");
+    }
+
+    #[test]
+    fn normalize_command_name_handles_full_path() {
+        assert_eq!(
+            super::normalize_command_name("/usr/local/bin/claude"),
+            "claude"
+        );
+        assert_eq!(
+            super::normalize_command_name("C:\\tools\\claude.exe"),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn normalize_command_name_lowercases_result() {
+        assert_eq!(super::normalize_command_name("Claude.EXE"), "claude");
+        assert_eq!(super::normalize_command_name("OpenCode"), "opencode");
+    }
+
+    // ── has_flag_value ───────────────────────────────────────────────────────
+
+    #[test]
+    fn has_flag_value_detects_space_separated_pair() {
+        let args = vec![
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+        ];
+        assert!(super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    #[test]
+    fn has_flag_value_detects_inline_equals_pair() {
+        let args = vec!["--ask-for-approval=never".to_string()];
+        assert!(super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    #[test]
+    fn has_flag_value_returns_false_when_value_does_not_match() {
+        let args = vec![
+            "--ask-for-approval".to_string(),
+            "always".to_string(),
+        ];
+        assert!(!super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    #[test]
+    fn has_flag_value_returns_false_when_flag_missing() {
+        let args = vec!["--other-flag".to_string()];
+        assert!(!super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    #[test]
+    fn has_flag_value_is_case_insensitive() {
+        let args = vec![
+            "--Ask-For-Approval".to_string(),
+            "Never".to_string(),
+        ];
+        assert!(super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    #[test]
+    fn has_flag_value_flag_at_end_without_value_returns_false() {
+        let args = vec!["--ask-for-approval".to_string()];
+        assert!(!super::has_flag_value(&args, "--ask-for-approval", "never"));
+    }
+
+    // ── summarize_request ────────────────────────────────────────────────────
+
+    #[test]
+    fn summarize_request_short_input_is_unchanged() {
+        let result = super::summarize_request("hello world", 50);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn summarize_request_collapses_whitespace() {
+        let result = super::summarize_request("hello   \n  world", 50);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn summarize_request_truncates_and_appends_ellipsis() {
+        let input = "a".repeat(10);
+        let result = super::summarize_request(&input, 5);
+        assert!(result.starts_with("aaaaa"));
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn summarize_request_at_exact_limit_is_not_truncated() {
+        let input = "a".repeat(10);
+        let result = super::summarize_request(&input, 10);
+        assert_eq!(result, "a".repeat(10));
+        assert!(!result.ends_with("..."));
+    }
+
+    // ── has_unknown_argument_indicators ─────────────────────────────────────
+
+    #[test]
+    fn has_unknown_argument_indicators_detects_patterns() {
+        assert!(super::has_unknown_argument_indicators("unknown option --foo"));
+        assert!(super::has_unknown_argument_indicators("Unknown Argument detected"));
+        assert!(super::has_unknown_argument_indicators("unrecognized option: --bar"));
+        assert!(super::has_unknown_argument_indicators("invalid option provided"));
+        assert!(!super::has_unknown_argument_indicators("all good here"));
+    }
+
+    // ── configure_cli_command integration: prompt embedding ─────────────────
+
     #[cfg(windows)]
     fn echo_stdin_command() -> &'static str {
         "cmd"
@@ -1278,5 +1401,39 @@ mod tests {
         let response = agent.respond(&context).await.expect("CLI should respond");
         assert!(response.content.contains("sample.md"));
         assert!(response.content.contains("say hello"));
+    }
+
+    /// When {prompt} is embedded in args the CLI receives the prompt inline and does
+    /// NOT receive a duplicate prompt appended as an extra positional argument.
+    /// We verify this by using a command that echoes only its args (not stdin), which
+    /// would produce different output if the prompt appeared twice.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn respond_with_prompt_placeholder_embeds_prompt_in_args() {
+        // `sh -c 'echo "$@"' --` echoes the positional args separated by spaces.
+        // We configure args as ["echo", "{prompt}"] so the entire prompt is
+        // forwarded as a single positional argument.  If a duplicate were appended
+        // the word "hello" would appear more than once in the output.
+        let cli_config = LocalLlmCliConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), "printf '%s' \"$1\"".to_string(), "--".to_string(), "{prompt}".to_string()],
+            prompt_via_stdin: false,
+            model_arg: None,
+            ensure_no_permission_flags: false,
+            timeout_seconds: 30,
+        };
+        let agent = LocalCliAgent::from_cli_config(&cli_config, "", AgentKind::LocalLlm)
+            .expect("agent should build");
+
+        let context = AgentContext {
+            context_files: vec![],
+            role: "implementer".to_string(),
+            instruction: "UNIQUEMARKER".to_string(),
+        };
+
+        let response = agent.respond(&context).await.expect("CLI should respond");
+        // The output should contain UNIQUEMARKER exactly once (embedded via placeholder).
+        let count = response.content.matches("UNIQUEMARKER").count();
+        assert_eq!(count, 1, "prompt should appear exactly once, got: {:?}", response.content);
     }
 }

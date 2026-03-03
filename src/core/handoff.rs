@@ -60,3 +60,106 @@ fn to_heading(stem: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    // ── to_heading ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_heading_single_word() {
+        assert_eq!(super::to_heading("inbox"), "Inbox");
+    }
+
+    #[test]
+    fn to_heading_underscore_separated() {
+        assert_eq!(super::to_heading("some_inbox"), "Some Inbox");
+    }
+
+    #[test]
+    fn to_heading_hyphen_separated() {
+        assert_eq!(super::to_heading("agent-outbox"), "Agent Outbox");
+    }
+
+    #[test]
+    fn to_heading_mixed_separators() {
+        assert_eq!(super::to_heading("my_agent-inbox"), "My Agent Inbox");
+    }
+
+    #[test]
+    fn to_heading_consecutive_separators_are_collapsed() {
+        assert_eq!(super::to_heading("a__b--c"), "A B C");
+    }
+
+    // ── read_handoff / append_handoff / clear_handoff ─────────────────────
+
+    #[tokio::test]
+    async fn read_handoff_returns_empty_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("inbox.md");
+        let content = read_handoff(&path).await.unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn append_handoff_creates_file_and_adds_entry() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("inbox.md");
+
+        append_handoff(&path, "agent-a", "hello from agent-a").await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("agent-a"));
+        assert!(content.contains("hello from agent-a"));
+    }
+
+    #[tokio::test]
+    async fn append_handoff_multiple_entries_accumulate() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("inbox.md");
+
+        append_handoff(&path, "agent-a", "first message").await.unwrap();
+        append_handoff(&path, "agent-b", "second message").await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("first message"));
+        assert!(content.contains("second message"));
+    }
+
+    #[tokio::test]
+    async fn clear_handoff_resets_file_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("inbox.md");
+
+        append_handoff(&path, "agent", "some message").await.unwrap();
+        clear_handoff(&path).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("No pending messages."));
+        assert!(!content.contains("some message"));
+    }
+
+    #[tokio::test]
+    async fn clear_handoff_uses_stem_as_heading() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent_inbox.md");
+
+        tokio::fs::write(&path, "initial content").await.unwrap();
+        clear_handoff(&path).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("# Agent Inbox"));
+    }
+
+    #[tokio::test]
+    async fn clear_handoff_does_nothing_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.md");
+        // Should not error
+        clear_handoff(&path).await.unwrap();
+        assert!(!path.exists());
+    }
+}
