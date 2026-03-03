@@ -29,6 +29,15 @@ pub async fn run(commands: &[String]) -> anyhow::Result<VerifyResult> {
             continue;
         }
 
+        #[cfg(target_os = "windows")]
+        let output = Command::new("cmd")
+            .kill_on_drop(true)
+            .args(["/C", cmd])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to execute '{}': {}", cmd, e))?;
+
+        #[cfg(not(target_os = "windows"))]
         let output = Command::new("sh")
             .kill_on_drop(true)
             .arg("-c")
