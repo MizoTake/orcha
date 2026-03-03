@@ -495,7 +495,6 @@ fn configure_cli_command(
 impl Agent for LocalCliAgent {
     async fn respond(&self, context: &AgentContext) -> anyhow::Result<AgentResponse> {
         let prompt = self.build_prompt(context);
-        let request_preview = summarize_request(&context.instruction, 120);
         let command_name = normalize_command_name(&self.command);
         let resolved_args = resolve_plan_mode_args_if_supported(
             &self.command,
@@ -524,12 +523,11 @@ impl Agent for LocalCliAgent {
             effective_args.push("--file".to_string());
             effective_args.push(prompt_file_path.clone());
             prompt_for_cli = "Read the attached file and follow its instructions exactly.".to_string();
-            println!(
-                "  ... local CLI prompt mode switch: command='{}' reason='opencode file attachment on Windows' file='{}' request=\"{}\"",
+            print_inline_status(&format!(
+                "  ... local CLI [{}] file prompt: {}",
                 self.command,
-                summarize_request(&prompt_file.display_path(), 120),
-                request_preview
-            );
+                summarize_request(&prompt_file.display_path(), 60),
+            ));
             _prompt_file_guard = Some(prompt_file);
         }
         let mut cmd = Command::new(&self.command);
@@ -554,12 +552,10 @@ impl Agent for LocalCliAgent {
                     &spawn_error,
                 ) {
                     effective_prompt_via_stdin = true;
-                    println!(
-                        "  ... local CLI spawn retry: command='{}' reason='os error {} (arg too long)' prompt_mode=stdin request=\"{}\"",
-                        self.command,
-                        WINDOWS_FILENAME_OR_EXTENSION_TOO_LONG_ERROR,
-                        request_preview
-                    );
+                    print_inline_status(&format!(
+                        "  ... local CLI [{}] retry: arg too long → stdin mode",
+                        self.command
+                    ));
                     let mut retry_cmd = Command::new(&self.command);
                     configure_cli_command(
                         &mut retry_cmd,
@@ -601,7 +597,6 @@ impl Agent for LocalCliAgent {
             child_pid,
             effective_prompt_via_stdin,
             &self.model,
-            &request_preview,
             thinking_enabled,
             self.timeout_seconds,
         )
@@ -663,7 +658,6 @@ async fn wait_with_output_and_heartbeat(
     child_pid: Option<u32>,
     prompt_via_stdin: bool,
     model: &str,
-    request_preview: &str,
     thinking_enabled: bool,
     timeout_seconds: u64,
 ) -> anyhow::Result<std::process::Output> {
@@ -693,8 +687,8 @@ async fn wait_with_output_and_heartbeat(
     drop(event_tx);
 
     print_inline_status(&format!(
-        "  ... local CLI start: command='{}' pid={} prompt_mode={} model={} request=\"{}\"",
-        command, pid, prompt_mode, model_name, request_preview
+        "  ... local CLI [{}:{}] started {} ({})",
+        command, pid, prompt_mode, model_name
     ));
 
     let started_at = Instant::now();
@@ -717,11 +711,8 @@ async fn wait_with_output_and_heartbeat(
                         stdout_task.abort();
                         stderr_task.abort();
                         finish_inline_status(&format!(
-                            "  ... local CLI wait failed: command='{}' pid={} elapsed={}s request=\"{}\"",
-                            command,
-                            pid,
-                            started_at.elapsed().as_secs(),
-                            request_preview
+                            "  ... local CLI [{}:{}] wait failed {}s",
+                            command, pid, started_at.elapsed().as_secs()
                         ));
                         return Err(anyhow::anyhow!("Failed waiting for CLI '{}': {}", command, e));
                     }
@@ -735,11 +726,10 @@ async fn wait_with_output_and_heartbeat(
                                 if update != last_thinking {
                                     last_thinking = update;
                                     print_inline_status(&format!(
-                                        "  ... local CLI thinking: command='{}' pid={} elapsed={}s thinking=\"{}\"",
-                                        command,
-                                        pid,
+                                        "  ... local CLI [{}:{}] {}s thinking: \"{}\"",
+                                        command, pid,
                                         started_at.elapsed().as_secs(),
-                                        last_thinking
+                                        summarize_request(&last_thinking, 40)
                                     ));
                                 }
                             }
@@ -757,12 +747,8 @@ async fn wait_with_output_and_heartbeat(
                     stdout_task.abort();
                     stderr_task.abort();
                     finish_inline_status(&format!(
-                        "  ... local CLI timeout: command='{}' pid={} elapsed={}s limit={}s request=\"{}\"",
-                        command,
-                        pid,
-                        started_at.elapsed().as_secs(),
-                        timeout_seconds,
-                        request_preview
+                        "  ... local CLI [{}:{}] timeout {}s (limit {}s)",
+                        command, pid, started_at.elapsed().as_secs(), timeout_seconds
                     ));
                     return Err(anyhow::anyhow!(
                         "Local CLI '{}' timed out after {} seconds",
@@ -773,19 +759,14 @@ async fn wait_with_output_and_heartbeat(
 
                 if last_thinking.is_empty() {
                     print_inline_status(&format!(
-                        "  ... local CLI waiting: command='{}' pid={} elapsed={}s request=\"{}\"",
-                        command,
-                        pid,
-                        started_at.elapsed().as_secs(),
-                        request_preview
+                        "  ... local CLI [{}:{}] {}s",
+                        command, pid, started_at.elapsed().as_secs()
                     ));
                 } else {
                     print_inline_status(&format!(
-                        "  ... local CLI waiting: command='{}' pid={} elapsed={}s thinking=\"{}\"",
-                        command,
-                        pid,
-                        started_at.elapsed().as_secs(),
-                        last_thinking
+                        "  ... local CLI [{}:{}] {}s thinking: \"{}\"",
+                        command, pid, started_at.elapsed().as_secs(),
+                        summarize_request(&last_thinking, 40)
                     ));
                 }
             }
@@ -803,12 +784,8 @@ async fn wait_with_output_and_heartbeat(
         .map_err(|e| anyhow::anyhow!("Failed to read stderr for '{}': {}", command, e))?;
 
     finish_inline_status(&format!(
-        "  ... local CLI done: command='{}' pid={} elapsed={}s exit={:?} request=\"{}\"",
-        command,
-        pid,
-        started_at.elapsed().as_secs(),
-        status.code(),
-        request_preview
+        "  ... local CLI [{}:{}] done {}s (exit={:?})",
+        command, pid, started_at.elapsed().as_secs(), status.code()
     ));
 
     Ok(std::process::Output {
