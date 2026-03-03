@@ -437,6 +437,15 @@ async fn resolve_plan_mode_args_if_supported(
     base_args.to_vec()
 }
 
+/// If any element of `args` contains `{prompt}`, returns a new vec with all occurrences
+/// replaced by `prompt`. Returns `None` when no placeholder is present.
+fn apply_prompt_placeholder(args: &[String], prompt: &str) -> Option<Vec<String>> {
+    if !args.iter().any(|arg| arg.contains("{prompt}")) {
+        return None;
+    }
+    Some(args.iter().map(|arg| arg.replace("{prompt}", prompt)).collect())
+}
+
 fn configure_cli_command(
     cmd: &mut Command,
     command_name: &str,
@@ -446,6 +455,7 @@ fn configure_cli_command(
     model: &str,
     prompt: &str,
     prompt_via_stdin: bool,
+    skip_prompt_arg: bool,
 ) {
     cmd.args(args);
     if let Some(permission) = opencode_permission_env_value(command_name, ensure_no_permission_flags)
@@ -463,7 +473,9 @@ fn configure_cli_command(
         }
     }
 
-    if prompt_via_stdin {
+    if skip_prompt_arg {
+        // Prompt was embedded via {prompt} placeholder substitution in args; nothing to append.
+    } else if prompt_via_stdin {
         cmd.stdin(Stdio::piped());
     } else {
         // opencode run uses positional message parsing; prompts beginning with '-' can be
@@ -498,7 +510,15 @@ impl Agent for LocalCliAgent {
         let mut effective_args = resolved_args.clone();
         let mut prompt_for_cli = prompt.clone();
         let mut _prompt_file_guard: Option<TempPromptFile> = None;
-        if should_use_opencode_file_prompt(&command_name, self.prompt_via_stdin) {
+        let mut prompt_embedded = false;
+
+        if let Some(substituted) = apply_prompt_placeholder(&effective_args, &prompt) {
+            // {prompt} placeholder found: embed the prompt directly into the args.
+            // Skip the file-based and arg-append approaches.
+            effective_args = substituted;
+            effective_prompt_via_stdin = false;
+            prompt_embedded = true;
+        } else if should_use_opencode_file_prompt(&command_name, self.prompt_via_stdin) {
             let prompt_file = TempPromptFile::create("orcha-opencode-prompt", &prompt)?;
             let prompt_file_path = prompt_file.arg_value();
             effective_args.push("--file".to_string());
@@ -522,6 +542,7 @@ impl Agent for LocalCliAgent {
             &self.model,
             &prompt_for_cli,
             effective_prompt_via_stdin,
+            prompt_embedded,
         );
 
         let mut child = match cmd.spawn() {
@@ -549,6 +570,7 @@ impl Agent for LocalCliAgent {
                         &self.model,
                         &prompt_for_cli,
                         true,
+                        false,
                     );
                     retry_cmd.spawn().map_err(|e| {
                         anyhow::anyhow!("Failed to start CLI '{}': {}", self.command, e)
@@ -1072,6 +1094,53 @@ mod tests {
         let agent = LocalCliAgent::new(&cfg).expect("agent should build");
         assert!(agent.model.is_empty());
         assert_eq!(agent.model_arg.as_deref(), Some("--model"));
+    }
+
+    #[test]
+    fn prompt_placeholder_is_substituted_in_args() {
+        let args = vec![
+            "run".to_string(),
+            "--message".to_string(),
+            "{prompt}".to_string(),
+        ];
+        let result = super::apply_prompt_placeholder(&args, "hello world");
+        assert_eq!(
+            result,
+            Some(vec![
+                "run".to_string(),
+                "--message".to_string(),
+                "hello world".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn prompt_placeholder_substitutes_all_occurrences_across_args() {
+        let args = vec![
+            "--prefix={prompt}".to_string(),
+            "--suffix={prompt}".to_string(),
+        ];
+        let result = super::apply_prompt_placeholder(&args, "msg");
+        assert_eq!(
+            result,
+            Some(vec![
+                "--prefix=msg".to_string(),
+                "--suffix=msg".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn prompt_placeholder_returns_none_when_no_placeholder_present() {
+        let args = vec!["run".to_string(), "--flag".to_string()];
+        let result = super::apply_prompt_placeholder(&args, "irrelevant");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn prompt_placeholder_returns_none_for_empty_args() {
+        let result = super::apply_prompt_placeholder(&[], "msg");
+        assert!(result.is_none());
     }
 
     #[test]
