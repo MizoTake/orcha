@@ -6,7 +6,7 @@ use crate::core::cycle::{CycleDecision, StopReason};
 use crate::core::profile::ProfileName;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::{Task, TaskState};
+use crate::core::task::{TaskState, TaskStore};
 use crate::machine_config::MachineConfig;
 
 /// Phase 7: Decide
@@ -14,16 +14,21 @@ use crate::machine_config::MachineConfig;
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
+    task_store: &TaskStore,
     _router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
-    let tasks = status.tasks()?;
+    let all_tasks = task_store.list_all().await?;
     let machine = MachineConfig::load(orch_dir)?;
     let max_cycles = machine.execution.max_cycles;
     let criteria_count = machine.execution.acceptance_criteria.len();
 
+    let done_count = all_tasks.iter().filter(|t| t.state == TaskState::Done).count();
+    let total = all_tasks.len();
+    let all_done = total > 0 && done_count == total;
     let verify_passed = status.content.contains("Overall: PASS");
-    if completion_satisfied(&tasks, verify_passed, criteria_count) {
+
+    if completion_satisfied(all_done, verify_passed, done_count, criteria_count) {
         status_log::append(
             &log_path,
             "decide",
@@ -31,9 +36,7 @@ pub async fn execute(
             "orch",
             &format!(
                 "Goal achieved. Tasks done: {}/{}; acceptance criteria: {}",
-                tasks.iter().filter(|t| t.state == TaskState::Done).count(),
-                tasks.len(),
-                criteria_count
+                done_count, total, criteria_count
             ),
         )
         .await?;
@@ -41,8 +44,6 @@ pub async fn execute(
     }
 
     let verify_failed = status.content.contains("Overall: FAIL");
-    let has_blocked = tasks.iter().any(|t| t.state == TaskState::Blocked);
-    let done_count = tasks.iter().filter(|t| t.state == TaskState::Done).count();
 
     // Check stop conditions
     let next_cycle = status.frontmatter.cycle + 1;
@@ -58,7 +59,7 @@ pub async fn execute(
         return Ok(CycleDecision::Blocked(StopReason::MaxCyclesReached));
     }
 
-    if (verify_failed || has_blocked) && status.frontmatter.profile == ProfileName::LocalOnly {
+    if verify_failed && status.frontmatter.profile == ProfileName::LocalOnly {
         status_log::append(
             &log_path,
             "decide",
@@ -76,12 +77,8 @@ pub async fn execute(
         "planner",
         "orch",
         &format!(
-            "Continuing to next cycle. Tasks done: {}/{}; verify_passed: {}; blocked: {}; acceptance criteria: {}",
-            done_count,
-            tasks.len(),
-            verify_passed,
-            has_blocked,
-            criteria_count
+            "Continuing to next cycle. Tasks done: {}/{}; verify_passed: {}; acceptance criteria: {}",
+            done_count, total, verify_passed, criteria_count
         ),
     )
     .await?;
@@ -89,64 +86,42 @@ pub async fn execute(
     Ok(CycleDecision::NextCycle)
 }
 
-fn completion_satisfied(tasks: &[Task], verify_passed: bool, criteria_count: usize) -> bool {
+fn completion_satisfied(
+    all_done: bool,
+    verify_passed: bool,
+    done_count: usize,
+    criteria_count: usize,
+) -> bool {
     if !verify_passed {
         return false;
     }
-
-    let done_count = tasks.iter().filter(|t| t.state == TaskState::Done).count();
-    let all_tasks_done = !tasks.is_empty() && done_count == tasks.len();
-    if !all_tasks_done {
+    if !all_done {
         return false;
     }
-
     criteria_count == 0 || done_count >= criteria_count
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::core::task::{Task, TaskState};
-
     use super::completion_satisfied;
-
-    fn sample_task(id: &str, state: TaskState) -> Task {
-        Task {
-            id: id.to_string(),
-            title: format!("task {}", id),
-            state,
-            owner: String::new(),
-            evidence: String::new(),
-            notes: String::new(),
-        }
-    }
 
     #[test]
     fn completion_requires_verify_pass() {
-        let tasks = vec![sample_task("T1", TaskState::Done)];
-        assert!(!completion_satisfied(&tasks, false, 1));
+        assert!(!completion_satisfied(true, false, 1, 1));
     }
 
     #[test]
     fn completion_requires_all_tasks_done() {
-        let tasks = vec![
-            sample_task("T1", TaskState::Done),
-            sample_task("T2", TaskState::Todo),
-        ];
-        assert!(!completion_satisfied(&tasks, true, 2));
+        assert!(!completion_satisfied(false, true, 1, 2));
     }
 
     #[test]
     fn completion_requires_non_empty_tasks() {
-        let tasks: Vec<Task> = Vec::new();
-        assert!(!completion_satisfied(&tasks, true, 0));
+        assert!(!completion_satisfied(false, true, 0, 0));
     }
 
     #[test]
     fn completion_succeeds_with_done_tasks_and_verify_pass() {
-        let tasks = vec![
-            sample_task("T1", TaskState::Done),
-            sample_task("T2", TaskState::Done),
-        ];
-        assert!(completion_satisfied(&tasks, true, 2));
+        assert!(completion_satisfied(true, true, 2, 2));
     }
 }

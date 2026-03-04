@@ -6,7 +6,9 @@ use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::{parse_task_table, Task, TaskState};
+use crate::core::task::{
+    parse_task_table, Task, TaskEntry, TaskFrontmatter, TaskState, TaskStore,
+};
 use crate::core::workspace_md;
 use crate::machine_config::MachineConfig;
 
@@ -15,12 +17,15 @@ use crate::machine_config::MachineConfig;
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
+    task_store: &TaskStore,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
-    let existing_tasks = status.tasks()?;
-    let has_remaining_work = existing_tasks.iter().any(|t| t.state != TaskState::Done);
+    let existing_tasks = task_store.list_all().await?;
+    let has_remaining_work = existing_tasks
+        .iter()
+        .any(|t| t.state != TaskState::Done);
     if !existing_tasks.is_empty() && has_remaining_work {
         status_log::append(
             &log_path,
@@ -45,6 +50,8 @@ pub async fn execute(
         .to_string();
     let role = tokio::fs::read_to_string(&role_path).await?;
 
+    let task_summary = task_store.render_summary_table().await?;
+
     let context = AgentContext {
         context_files: vec![
             ContextFile {
@@ -54,6 +61,10 @@ pub async fn execute(
             ContextFile {
                 name: "status.md".into(),
                 content: status.content.clone(),
+            },
+            ContextFile {
+                name: "tasks_summary".into(),
+                content: task_summary,
             },
             ContextFile {
                 name: role_name,
@@ -67,7 +78,7 @@ pub async fn execute(
              Return an updated task table in this exact format:\n\
              | ID | Title | State | Owner | Evidence | Notes |\n\
              |---|---|---|---|---|---|\n\
-             | T1 | Task title | todo | agent_name | | description |\n\n\
+             | T1 | Task title | issue | agent_name | | description |\n\n\
              Also provide a brief plan rationale after the table.",
             status.frontmatter.cycle
         ),
@@ -90,17 +101,18 @@ pub async fn execute(
     if let Ok(new_tasks) = parse_task_table(&response.content) {
         if !new_tasks.is_empty() {
             applied_tasks = new_tasks.len();
-            status.replace_task_table(&new_tasks);
+            create_task_files(task_store, &new_tasks).await?;
         }
     }
 
     // Fallback: derive initial tasks from machine config acceptance criteria.
     if applied_tasks == 0 {
         let machine = MachineConfig::load(orch_dir)?;
-        let fallback_tasks = tasks_from_acceptance_criteria(&machine.execution.acceptance_criteria);
+        let fallback_tasks =
+            tasks_from_acceptance_criteria(&machine.execution.acceptance_criteria);
         if !fallback_tasks.is_empty() {
             applied_tasks = fallback_tasks.len();
-            status.replace_task_table(&fallback_tasks);
+            create_task_files(task_store, &fallback_tasks).await?;
         }
     }
 
@@ -116,6 +128,29 @@ pub async fn execute(
     Ok(CycleDecision::NextPhase)
 }
 
+/// Create task files in the issue folder from parsed Task structs.
+async fn create_task_files(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Result<()> {
+    for task in tasks {
+        let file_name = TaskEntry::generate_file_name(&task.id, &task.title);
+        let entry = TaskEntry {
+            frontmatter: TaskFrontmatter {
+                id: task.id.clone(),
+                title: task.title.clone(),
+                owner: task.owner.clone(),
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+            content: format!(
+                "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
+                task.title, task.notes
+            ),
+            state: TaskState::Issue,
+            file_name,
+        };
+        task_store.create_task(&entry).await?;
+    }
+    Ok(())
+}
+
 fn tasks_from_acceptance_criteria(criteria: &[String]) -> Vec<Task> {
     criteria
         .iter()
@@ -123,7 +158,7 @@ fn tasks_from_acceptance_criteria(criteria: &[String]) -> Vec<Task> {
         .map(|(idx, c)| Task {
             id: format!("T{}", idx + 1),
             title: sanitize_table_cell(c),
-            state: TaskState::Todo,
+            state: TaskState::Issue,
             owner: String::new(),
             evidence: String::new(),
             notes: "Derived from orcha.yml execution.acceptance_criteria".to_string(),
@@ -151,9 +186,9 @@ mod tests {
         let tasks = tasks_from_acceptance_criteria(&criteria);
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "T1");
-        assert_eq!(tasks[0].state, TaskState::Todo);
+        assert_eq!(tasks[0].state, TaskState::Issue);
         assert_eq!(tasks[1].id, "T2");
-        assert_eq!(tasks[1].state, TaskState::Todo);
+        assert_eq!(tasks[1].state, TaskState::Issue);
     }
 
     #[test]

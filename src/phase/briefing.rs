@@ -7,13 +7,15 @@ use crate::core::cycle::CycleDecision;
 use crate::core::handoff;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
+use crate::core::task::TaskStore;
 use crate::core::workspace_md;
 
 /// Phase 1: Briefing
-/// Read goal, status, inbox and prepare context summary for the cycle.
+/// Read goal, status, tasks, inbox and prepare context summary for the cycle.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
+    task_store: &TaskStore,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
@@ -30,6 +32,8 @@ pub async fn execute(
     let inbox_path = workspace_md::resolve_handoff_file(orch_dir, "inbox")?;
     let inbox = handoff::read_handoff(&inbox_path).await?;
 
+    let task_summary = task_store.render_summary_table().await?;
+
     let context = AgentContext {
         context_files: vec![
             ContextFile {
@@ -42,6 +46,10 @@ pub async fn execute(
                     "Cycle: {}\nPhase: {}\n\n{}",
                     status.frontmatter.cycle, status.frontmatter.phase, status.content
                 ),
+            },
+            ContextFile {
+                name: "tasks_summary".into(),
+                content: task_summary,
             },
             ContextFile {
                 name: role_name.clone(),

@@ -17,7 +17,7 @@ use crate::core::profile;
 use crate::core::agent_workspace;
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::{Task, TaskState, parse_task_table};
+use crate::core::task::{Task, TaskState, TaskStore, TaskEntry, TaskFrontmatter, parse_task_table};
 use crate::core::structured_log;
 use crate::core::workspace_md;
 use crate::machine_config::MachineConfig;
@@ -48,6 +48,9 @@ pub async fn execute(
             "▶".green()
         );
     }
+
+    let task_store = TaskStore::new(orch_dir);
+    task_store.ensure_dirs().await?;
 
     let mut machine = MachineConfig::load(orch_dir)?;
     let max_cycles = machine.execution.max_cycles;
@@ -89,12 +92,13 @@ pub async fn execute(
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let mut diff_baseline = collect_git_numstat_snapshot().await;
 
-    if let Some(bootstrap_request) = resolve_bootstrap_request(orch_dir, &status, spec_path)? {
+    if let Some(bootstrap_request) = resolve_bootstrap_request(orch_dir, &task_store, spec_path).await? {
         apply_spec_bootstrap(
             orch_dir,
             &mut status,
             &mut machine,
             config,
+            &task_store,
             &bootstrap_request,
         )
         .await?;
@@ -161,7 +165,7 @@ pub async fn execute(
             Phase::Briefing => {
                 execute_phase_with_heartbeat(
                     phase,
-                    phase::briefing::execute(orch_dir, &mut status, &router),
+                    phase::briefing::execute(orch_dir, &mut status, &task_store, &router),
                     phase_timeout,
                 )
                     .await
@@ -169,7 +173,7 @@ pub async fn execute(
             Phase::Plan => {
                 execute_phase_with_heartbeat(
                     phase,
-                    phase::plan::execute(orch_dir, &mut status, &router),
+                    phase::plan::execute(orch_dir, &mut status, &task_store, &router),
                     phase_timeout,
                 )
                     .await
@@ -177,7 +181,7 @@ pub async fn execute(
             Phase::Impl => {
                 execute_phase_with_heartbeat(
                     phase,
-                    phase::impl_phase::execute(orch_dir, &mut status, &router),
+                    phase::impl_phase::execute(orch_dir, &mut status, &task_store, &router),
                     phase_timeout,
                 )
                     .await
@@ -209,7 +213,7 @@ pub async fn execute(
             Phase::Decide => {
                 execute_phase_with_heartbeat(
                     phase,
-                    phase::decide::execute(orch_dir, &mut status, &router),
+                    phase::decide::execute(orch_dir, &mut status, &task_store, &router),
                     phase_timeout,
                 )
                     .await
@@ -671,9 +675,9 @@ fn resolve_profile_rules_for_cycle(
     Ok((resolved_profile_ref, resolved_profile_name, profile_rules))
 }
 
-fn resolve_bootstrap_request(
+async fn resolve_bootstrap_request(
     orch_dir: &Path,
-    status: &StatusFile,
+    task_store: &TaskStore,
     spec_path: Option<&Path>,
 ) -> anyhow::Result<Option<SpecBootstrapRequest>> {
     if let Some(spec_path) = spec_path {
@@ -683,8 +687,7 @@ fn resolve_bootstrap_request(
         }));
     }
 
-    let existing_tasks = status.tasks()?;
-    if existing_tasks.is_empty() {
+    if task_store.is_empty().await? {
         return Ok(Some(SpecBootstrapRequest {
             source_path: orch_dir.join("goal.md"),
             mode: SpecBootstrapMode::TaskOnly,
@@ -699,6 +702,7 @@ async fn apply_spec_bootstrap(
     status: &mut StatusFile,
     machine: &mut MachineConfig,
     config: &AppConfig,
+    task_store: &TaskStore,
     request: &SpecBootstrapRequest,
 ) -> anyhow::Result<()> {
     let resolved_spec_path = request.source_path.clone();
@@ -784,7 +788,7 @@ async fn apply_spec_bootstrap(
             tokio::fs::write(&machine_path, machine_yaml).await?;
 
             if !parsed.tasks.is_empty() {
-                status.replace_task_table(&parsed.tasks);
+                create_task_files_from_tasks(task_store, &parsed.tasks).await?;
             }
 
             let applied_summary = format!(
@@ -846,7 +850,7 @@ async fn apply_spec_bootstrap(
                 &machine.execution.acceptance_criteria,
             )?;
             if !tasks.is_empty() {
-                status.replace_task_table(&tasks);
+                create_task_files_from_tasks(task_store, &tasks).await?;
             }
             let applied_summary = format!(
                 "Task breakdown initialized from {} (tasks: {})",
@@ -885,13 +889,13 @@ fn full_spec_bootstrap_instruction() -> &'static str {
 2) A markdown task table in this exact format:\n\
 | ID | Title | State | Owner | Evidence | Notes |\n\
 |---|---|---|---|---|---|\n\
-| T1 | Task title | todo | implementer | | reason |\n\
+| T1 | Task title | issue | implementer | | reason |\n\
 \n\
 Rules:\n\
 - Keep acceptance_criteria concrete and testable.\n\
 - verification_commands must be runnable shell commands.\n\
 - Put uncertain points in ambiguities.\n\
-- State must be todo for all initial tasks."
+- State must be issue for all initial tasks."
 }
 
 fn task_breakdown_instruction() -> &'static str {
@@ -899,11 +903,11 @@ fn task_breakdown_instruction() -> &'static str {
 Return a markdown task table in this exact format:\n\
 | ID | Title | State | Owner | Evidence | Notes |\n\
 |---|---|---|---|---|---|\n\
-| T1 | Task title | todo | implementer | | reason |\n\
+| T1 | Task title | issue | implementer | | reason |\n\
 \n\
 Rules:\n\
 - Create atomic tasks that can be completed in short cycles.\n\
-- Set State to todo for all rows.\n\
+- Set State to issue for all rows.\n\
 - Keep IDs sequential as T1, T2, T3..."
 }
 
@@ -1014,12 +1018,34 @@ fn tasks_from_criteria(criteria: &[String]) -> Vec<Task> {
         .map(|(idx, criterion)| Task {
             id: format!("T{}", idx + 1),
             title: sanitize_markdown_cell(criterion),
-            state: TaskState::Todo,
+            state: TaskState::Issue,
             owner: "implementer".to_string(),
             evidence: String::new(),
             notes: "Generated from spec acceptance criteria".to_string(),
         })
         .collect()
+}
+
+async fn create_task_files_from_tasks(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Result<()> {
+    for task in tasks {
+        let file_name = TaskEntry::generate_file_name(&task.id, &task.title);
+        let entry = TaskEntry {
+            frontmatter: TaskFrontmatter {
+                id: task.id.clone(),
+                title: task.title.clone(),
+                owner: task.owner.clone(),
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+            content: format!(
+                "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
+                task.title, task.notes
+            ),
+            state: TaskState::Issue,
+            file_name,
+        };
+        task_store.create_task(&entry).await?;
+    }
+    Ok(())
 }
 
 fn sanitize_markdown_cell(value: &str) -> String {
@@ -1346,6 +1372,7 @@ mod tests {
     };
     use crate::agent::AgentKind;
     use crate::core::{agent_workspace, status::StatusFile};
+    use crate::core::task::TaskStore;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 
@@ -1477,8 +1504,8 @@ mod tests {
 
 | ID | Title | State | Owner | Evidence | Notes |
 |---|---|---|---|---|---|
-| T1 | Add create API | todo | implementer | | from spec |
-| T2 | Add list API | todo | implementer | | from spec |
+| T1 | Add create API | issue | implementer | | from spec |
+| T2 | Add list API | issue | implementer | | from spec |
 "#;
 
         let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
@@ -1520,42 +1547,61 @@ mod tests {
         assert_eq!(fail, 1);
     }
 
-    #[test]
-    fn resolve_bootstrap_request_defaults_to_goal_when_tasks_missing() {
+    #[tokio::test]
+    async fn resolve_bootstrap_request_defaults_to_goal_when_tasks_missing() {
         let temp = TempDir::new().expect("temp dir should be created");
-        let status = StatusFile::from_str(&sample_status_with_writer("null"))
-            .expect("status should parse");
+        let task_store = TaskStore::new(temp.path());
+        task_store.ensure_dirs().await.unwrap();
 
-        let request = resolve_bootstrap_request(temp.path(), &status, None)
+        let request = resolve_bootstrap_request(temp.path(), &task_store, None)
+            .await
             .expect("should resolve")
             .expect("bootstrap should be enabled");
         assert_eq!(request.mode, SpecBootstrapMode::TaskOnly);
         assert!(request.source_path.ends_with("goal.md"));
     }
 
-    #[test]
-    fn resolve_bootstrap_request_uses_fullsync_when_spec_is_provided() {
+    #[tokio::test]
+    async fn resolve_bootstrap_request_uses_fullsync_when_spec_is_provided() {
         let temp = TempDir::new().expect("temp dir should be created");
-        let status = StatusFile::from_str(&sample_status_with_writer("null"))
-            .expect("status should parse");
+        let task_store = TaskStore::new(temp.path());
+        task_store.ensure_dirs().await.unwrap();
 
         let request = resolve_bootstrap_request(
             temp.path(),
-            &status,
+            &task_store,
             Some(std::path::Path::new("requirements.md")),
         )
+        .await
         .expect("should resolve")
         .expect("bootstrap should be enabled");
         assert_eq!(request.mode, SpecBootstrapMode::FullSync);
         assert!(request.source_path.ends_with("requirements.md"));
     }
 
-    #[test]
-    fn resolve_bootstrap_request_skips_when_tasks_exist() {
-        let status_with_tasks = "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 0\nphase: briefing\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: null\n  active_task: null\n---\n\n## Task Table\n\n| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Setup | todo | implementer | | |\n";
-        let status = StatusFile::from_str(status_with_tasks).expect("status should parse");
+    #[tokio::test]
+    async fn resolve_bootstrap_request_skips_when_tasks_exist() {
         let temp = TempDir::new().expect("temp dir should be created");
-        let request = resolve_bootstrap_request(temp.path(), &status, None)
+        let task_store = TaskStore::new(temp.path());
+        task_store.ensure_dirs().await.unwrap();
+
+        // Create a task file so tasks are not empty
+        use crate::core::task::{TaskEntry, TaskFrontmatter, TaskState};
+        let entry = TaskEntry {
+            frontmatter: TaskFrontmatter {
+                id: "T1".into(),
+                title: "Setup".into(),
+                owner: "implementer".into(),
+                created: String::new(),
+            },
+            content: String::new(),
+            state: TaskState::Issue,
+            file_name: "T1-setup.md".into(),
+        };
+        task_store.create_task(&entry).await.unwrap();
+
+        let request = resolve_bootstrap_request(temp.path(), &task_store, None)
+            .await
             .expect("should resolve");
         assert!(request.is_none());
     }
@@ -1570,7 +1616,7 @@ mod tests {
 
     #[test]
     fn parse_task_breakdown_response_uses_table_when_present() {
-        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | todo | implementer | | |\n";
+        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | issue | implementer | | |\n";
         let tasks = parse_task_breakdown_response(response, &[])
             .expect("should parse table");
         assert_eq!(tasks.len(), 1);

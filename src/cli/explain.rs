@@ -9,6 +9,7 @@ use crate::core::gate;
 use crate::core::health::Health;
 use crate::core::profile;
 use crate::core::status::StatusFile;
+use crate::core::task::TaskStore;
 use crate::machine_config::MachineConfig;
 use crate::machine_config::ProviderMode;
 
@@ -28,7 +29,9 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
         .execution
         .resolve_profile_ref(status.frontmatter.cycle, status.frontmatter.profile);
     let active_profile = active_profile_ref.to_string();
-    let tasks = status.tasks().unwrap_or_default();
+    let task_store = TaskStore::new(orch_dir);
+    let task_entries = task_store.list_all().await.unwrap_or_default();
+    let tasks: Vec<_> = task_entries.iter().map(|e| e.to_task()).collect();
     let mut profile_rules = machine
         .execution
         .resolve_profile_rules(status.frontmatter.cycle, status.frontmatter.profile);

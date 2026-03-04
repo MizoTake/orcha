@@ -6,26 +6,27 @@ use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, Phase};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::TaskState;
+use crate::core::task::{TaskState, TaskStore};
 use crate::core::workspace_md;
 
 /// Phase 3: Implementation
-/// Implementer agent executes the next `todo` task.
+/// Implementer agent executes the next `issue` task.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
+    task_store: &TaskStore,
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
-    let mut tasks = status.tasks()?;
 
-    // Find the next todo task
-    let task_idx = tasks.iter().position(|t| t.state == TaskState::Todo);
-    let task_idx = match task_idx {
-        Some(idx) => idx,
+    // Find the next issue task
+    let next_task = task_store.next_issue().await?;
+    let mut task_entry = match next_task {
+        Some(entry) => entry,
         None => {
-            // No todo tasks, check if all done
-            if tasks.iter().all(|t| t.state == TaskState::Done) {
+            // No issue tasks — check if all done
+            let all = task_store.list_all().await?;
+            if all.iter().all(|t| t.state == TaskState::Done) {
                 status_log::append(
                     &log_path,
                     "impl",
@@ -41,18 +42,24 @@ pub async fn execute(
                 "impl",
                 "implementer",
                 "orch",
-                "No todo tasks available (some may be blocked)",
+                "No issue tasks available (some may be wip)",
             )
             .await?;
             return Ok(CycleDecision::NextPhase);
         }
     };
 
-    // Mark task as doing
-    tasks[task_idx].state = TaskState::Doing;
-    tasks[task_idx].owner = "local_llm".to_string();
-    status.replace_task_table(&tasks);
-    status.frontmatter.locks.active_task = Some(tasks[task_idx].id.clone());
+    // Move task from issue → wip
+    let file_name = task_entry.file_name.clone();
+    let task_id = task_entry.frontmatter.id.clone();
+    let task_title = task_entry.frontmatter.title.clone();
+    task_entry.frontmatter.owner = "local_llm".to_string();
+    task_store
+        .move_task(&file_name, TaskState::Issue, TaskState::Wip)
+        .await?;
+    task_entry.state = TaskState::Wip;
+    task_store.update_task(&task_entry).await?;
+    status.frontmatter.locks.active_task = Some(task_id.clone());
 
     let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role_path = workspace_md::resolve_role_file(orch_dir, "implementer")?;
@@ -74,6 +81,10 @@ pub async fn execute(
                 content: status.content.clone(),
             },
             ContextFile {
+                name: format!("task_{}.md", task_id),
+                content: task_entry.content.clone(),
+            },
+            ContextFile {
                 name: role_name,
                 content: role,
             },
@@ -83,9 +94,9 @@ pub async fn execute(
             "Implement the following task:\n\
              ID: {}\n\
              Title: {}\n\
-             Notes: {}\n\n\
+             Details:\n{}\n\n\
              Provide the implementation and evidence of completion.",
-            tasks[task_idx].id, tasks[task_idx].title, tasks[task_idx].notes
+            task_id, task_title, task_entry.content
         ),
     };
 
@@ -102,11 +113,17 @@ pub async fn execute(
     )
     .await?;
 
-    // Mark task as done
-    tasks[task_idx].state = TaskState::Done;
-    tasks[task_idx].evidence = "impl completed".to_string();
-    tasks[task_idx].owner = response.model_used.clone();
-    status.replace_task_table(&tasks);
+    // Move task from wip → done, update content with evidence
+    task_store
+        .move_task(&file_name, TaskState::Wip, TaskState::Done)
+        .await?;
+    task_entry.state = TaskState::Done;
+    task_entry.frontmatter.owner = response.model_used.clone();
+
+    // Append evidence to the task content
+    let evidence_section = format!("impl completed by {}", response.model_used);
+    update_section(&mut task_entry.content, "Evidence", &evidence_section);
+    task_store.update_task(&task_entry).await?;
     status.frontmatter.locks.active_task = None;
 
     status_log::append(
@@ -114,10 +131,7 @@ pub async fn execute(
         "impl",
         "implementer",
         &response.model_used,
-        &format!(
-            "Completed task {}: {}",
-            tasks[task_idx].id, tasks[task_idx].title
-        ),
+        &format!("Completed task {}: {}", task_id, task_title),
     )
     .await?;
 
@@ -131,4 +145,23 @@ pub async fn execute(
     .await?;
 
     Ok(CycleDecision::NextPhase)
+}
+
+fn update_section(content: &mut String, heading: &str, new_text: &str) {
+    let marker = format!("## {}", heading);
+    if let Some(start) = content.find(&marker) {
+        let after_marker = start + marker.len();
+        let after = &content[after_marker..];
+        let section_end = after
+            .find("\n## ")
+            .map(|p| after_marker + p)
+            .unwrap_or(content.len());
+        *content = format!(
+            "{}{}\n\n{}\n\n{}",
+            &content[..start],
+            marker,
+            new_text,
+            &content[section_end..]
+        );
+    }
 }

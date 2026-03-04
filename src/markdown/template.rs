@@ -34,6 +34,33 @@ cost
 "#
 }
 
+pub fn task_md(id: &str, title: &str) -> String {
+    format!(
+        r#"---
+id: {id}
+title: '{title}'
+owner: ''
+created: '{timestamp}'
+---
+
+## Description
+
+<!-- Describe what this task should accomplish -->
+
+## Evidence
+
+<!-- Filled in when the task is completed -->
+
+## Notes
+
+<!-- Additional notes -->
+"#,
+        id = id,
+        title = title.replace('\'', "''"),
+        timestamp = chrono::Utc::now().to_rfc3339(),
+    )
+}
+
 pub fn orcha_yml() -> &'static str {
     r#"version: 1
 
@@ -121,11 +148,6 @@ None.
 
 See active profile for escalation rules.
 
-## Task Table
-
-| ID | Title | State | Owner | Evidence | Notes |
-|---|---|---|---|---|---|
-
 ## Latest Notes
 
 Initialized.
@@ -162,7 +184,7 @@ Return an updated task table in markdown format:
 ```
 | ID | Title | State | Owner | Evidence | Notes |
 |---|---|---|---|---|---|
-| T1 | Task title | todo | agent | | description |
+| T1 | Task title | issue | agent | | description |
 ```
 
 Also provide a brief summary of the plan rationale.

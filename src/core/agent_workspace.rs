@@ -4,9 +4,18 @@ pub const AGENT_WORKSPACE_DIR: &str = "agentworkspace";
 pub const STATUS_FILE_NAME: &str = "status.md";
 pub const STATUS_LOG_FILE_NAME: &str = "status_log.md";
 pub const EVENTS_LOG_FILE_NAME: &str = "events.jsonl";
+pub const TASKS_DIR: &str = "tasks";
 
 pub fn dir(orch_dir: &Path) -> PathBuf {
     orch_dir.join(AGENT_WORKSPACE_DIR)
+}
+
+pub fn tasks_dir(orch_dir: &Path) -> PathBuf {
+    orch_dir.join(TASKS_DIR)
+}
+
+pub fn tasks_state_dir(orch_dir: &Path, state: &crate::core::task::TaskState) -> PathBuf {
+    tasks_dir(orch_dir).join(state.folder_name())
 }
 
 pub fn status_path(orch_dir: &Path) -> PathBuf {

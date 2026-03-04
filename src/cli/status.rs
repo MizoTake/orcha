@@ -7,7 +7,7 @@ use comfy_table::{Cell, Color, Table};
 use crate::core::error::OrchaError;
 use crate::core::health::Health;
 use crate::core::status::StatusFile;
-use crate::core::task::TaskState;
+use crate::core::task::{TaskState, TaskStore};
 use crate::core::agent_workspace;
 use crate::machine_config::MachineConfig;
 
@@ -31,7 +31,10 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
                 .to_string()
         })
         .unwrap_or_else(|| status.frontmatter.profile.to_string());
-    let tasks = status.tasks().unwrap_or_default();
+
+    let task_store = TaskStore::new(orch_dir);
+    let task_entries = task_store.list_all().await.unwrap_or_default();
+    let tasks: Vec<_> = task_entries.iter().map(|e| e.to_task()).collect();
 
     let health = Health::evaluate(
         &tasks, None, // No verify result available from just reading status
@@ -93,22 +96,19 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     } else {
         println!("{}", "─── Tasks ───".bold());
         let mut table = Table::new();
-        table.set_header(vec!["ID", "Title", "State", "Owner", "Evidence", "Notes"]);
+        table.set_header(vec!["ID", "Title", "State", "Owner"]);
 
         for t in &tasks {
             let state_color = match t.state {
-                TaskState::Todo => Color::White,
-                TaskState::Doing => Color::Yellow,
+                TaskState::Issue => Color::White,
+                TaskState::Wip => Color::Yellow,
                 TaskState::Done => Color::Green,
-                TaskState::Blocked => Color::Red,
             };
             table.add_row(vec![
                 Cell::new(&t.id),
                 Cell::new(&t.title),
                 Cell::new(t.state.to_string()).fg(state_color),
                 Cell::new(&t.owner),
-                Cell::new(&t.evidence),
-                Cell::new(&t.notes),
             ]);
         }
         println!("{}", table);
@@ -117,18 +117,14 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     // Summary counts
     let total = tasks.len();
     let done = tasks.iter().filter(|t| t.state == TaskState::Done).count();
-    let doing = tasks.iter().filter(|t| t.state == TaskState::Doing).count();
-    let blocked = tasks
-        .iter()
-        .filter(|t| t.state == TaskState::Blocked)
-        .count();
-    let todo = tasks.iter().filter(|t| t.state == TaskState::Todo).count();
+    let wip = tasks.iter().filter(|t| t.state == TaskState::Wip).count();
+    let issue = tasks.iter().filter(|t| t.state == TaskState::Issue).count();
 
     if total > 0 {
         println!();
         println!(
-            "  Progress: {}/{} done, {} doing, {} todo, {} blocked",
-            done, total, doing, todo, blocked
+            "  Progress: {}/{} done, {} wip, {} issue",
+            done, total, wip, issue
         );
     }
 
