@@ -62,12 +62,12 @@ impl LocalCliAgent {
 }
 
 fn with_no_permission_flags(command: &str, args: &[String], enabled: bool) -> Vec<String> {
-    if !enabled {
-        return args.to_vec();
-    }
-
     let command_name = normalize_command_name(command);
-    let mut resolved = args.to_vec();
+    let mut resolved = force_fresh_session_args(&command_name, args);
+
+    if !enabled {
+        return resolved;
+    }
 
     if is_codex_command(&command_name) {
         ensure_codex_no_permission_args(&mut resolved);
@@ -76,6 +76,103 @@ fn with_no_permission_flags(command: &str, args: &[String], enabled: bool) -> Ve
     }
 
     resolved
+}
+
+fn force_fresh_session_args(command_name: &str, args: &[String]) -> Vec<String> {
+    if is_codex_command(command_name) {
+        return force_fresh_codex_args(args);
+    }
+    if is_claude_code_command(command_name) {
+        return force_fresh_claude_args(args);
+    }
+    args.to_vec()
+}
+
+fn force_fresh_codex_args(args: &[String]) -> Vec<String> {
+    let mut filtered = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+
+        if arg.eq_ignore_ascii_case("resume")
+            || arg.eq_ignore_ascii_case("fork")
+            || arg.eq_ignore_ascii_case("--last")
+        {
+            idx += 1;
+            continue;
+        }
+
+        filtered.push(arg.clone());
+        idx += 1;
+    }
+
+    if filtered.is_empty() {
+        filtered.push("exec".to_string());
+    }
+
+    if filtered
+        .first()
+        .is_some_and(|first| first.eq_ignore_ascii_case("exec"))
+        && !filtered
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("--ephemeral"))
+    {
+        filtered.push("--ephemeral".to_string());
+    }
+
+    filtered
+}
+
+fn force_fresh_claude_args(args: &[String]) -> Vec<String> {
+    let mut filtered = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = &args[idx];
+
+        if arg.eq_ignore_ascii_case("-c") || arg.eq_ignore_ascii_case("--continue") {
+            idx += 1;
+            continue;
+        }
+
+        if arg.eq_ignore_ascii_case("-r") || arg.eq_ignore_ascii_case("--resume") {
+            idx += 1;
+            if idx < args.len() && !args[idx].starts_with('-') {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if arg.eq_ignore_ascii_case("--session-id") {
+            idx += 1;
+            if idx < args.len() {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if let Some((flag, _value)) = arg.split_once('=') {
+            if flag.eq_ignore_ascii_case("--session-id") {
+                idx += 1;
+                continue;
+            }
+        }
+
+        filtered.push(arg.clone());
+        idx += 1;
+    }
+
+    let has_print = filtered.iter().any(|arg| {
+        arg.eq_ignore_ascii_case("-p") || arg.eq_ignore_ascii_case("--print")
+    });
+    if has_print
+        && !filtered
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("--no-session-persistence"))
+    {
+        filtered.push("--no-session-persistence".to_string());
+    }
+
+    filtered
 }
 
 fn normalize_command_name(command: &str) -> String {
@@ -1015,6 +1112,7 @@ mod tests {
             agent.args,
             vec![
                 "exec".to_string(),
+                "--ephemeral".to_string(),
                 "--ask-for-approval".to_string(),
                 "never".to_string()
             ]
@@ -1027,6 +1125,7 @@ mod tests {
             "codex",
             vec![
                 "exec".to_string(),
+                "--ephemeral".to_string(),
                 "--ask-for-approval".to_string(),
                 "never".to_string(),
             ],
@@ -1049,6 +1148,10 @@ mod tests {
         assert!(agent
             .args
             .iter()
+            .any(|arg| arg == "--no-session-persistence"));
+        assert!(agent
+            .args
+            .iter()
             .any(|arg| arg == "--dangerously-skip-permissions"));
     }
 
@@ -1056,10 +1159,53 @@ mod tests {
     fn can_disable_auto_permission_flags() {
         let cfg = sample_config_with("codex", vec!["exec".to_string()], false);
         let agent = LocalCliAgent::new(&cfg).expect("agent should build");
+        assert!(agent.args.iter().any(|arg| arg == "--ephemeral"));
         assert!(!agent
             .args
             .iter()
             .any(|arg| arg == "--ask-for-approval" || arg == "never"));
+    }
+
+    #[test]
+    fn codex_resume_args_are_removed_and_exec_is_forced() {
+        let cfg = sample_config_with(
+            "codex",
+            vec!["resume".to_string(), "--last".to_string()],
+            false,
+        );
+        let agent = LocalCliAgent::new(&cfg).expect("agent should build");
+        assert_eq!(
+            agent.args,
+            vec!["exec".to_string(), "--ephemeral".to_string()]
+        );
+    }
+
+    #[test]
+    fn claude_resume_related_args_are_removed() {
+        let cfg = sample_config_with(
+            "claude",
+            vec![
+                "--print".to_string(),
+                "--resume".to_string(),
+                "abc123".to_string(),
+                "--session-id=9cfe7994-e34f-49ce-9188-95de9fd6b465".to_string(),
+                "-c".to_string(),
+            ],
+            false,
+        );
+        let agent = LocalCliAgent::new(&cfg).expect("agent should build");
+
+        assert!(!agent.args.iter().any(|arg| arg == "--resume" || arg == "-r"));
+        assert!(!agent.args.iter().any(|arg| arg == "--continue" || arg == "-c"));
+        assert!(!agent
+            .args
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("--session-id")
+                || arg.starts_with("--session-id=")));
+        assert!(agent
+            .args
+            .iter()
+            .any(|arg| arg == "--no-session-persistence"));
     }
 
     #[test]
