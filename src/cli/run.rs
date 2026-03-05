@@ -30,6 +30,7 @@ pub async fn execute(
     allow_concurrent: bool,
     spec_path: Option<&Path>,
     reset_cycle: bool,
+    no_timeout: bool,
 ) -> anyhow::Result<()> {
     let status_path = agent_workspace::resolve_status_path(orch_dir);
     if !status_path.exists() {
@@ -53,6 +54,7 @@ pub async fn execute(
     task_store.ensure_dirs().await?;
 
     let mut machine = MachineConfig::load(orch_dir)?;
+    let runtime_config = resolve_runtime_config(config, &mut machine, no_timeout);
     let max_cycles = machine.execution.max_cycles;
     let max_consecutive_verify_failures = machine.execution.max_consecutive_verify_failures.max(1);
     let mut consecutive_verify_failures = 0u32;
@@ -97,7 +99,7 @@ pub async fn execute(
             orch_dir,
             &mut status,
             &mut machine,
-            config,
+            &runtime_config,
             &task_store,
             &bootstrap_request,
         )
@@ -122,7 +124,7 @@ pub async fn execute(
 
         let (_resolved_profile_ref, resolved_profile_name, profile_rules) =
             resolve_profile_rules_for_cycle(orch_dir, &machine, &status, true)?;
-        let router = AgentRouter::new(config, &profile_rules, &disabled_agents_by_cli_limit)?;
+        let router = AgentRouter::new(&runtime_config, &profile_rules, &disabled_agents_by_cli_limit)?;
         status.frontmatter.profile = resolved_profile_name;
         let status_before_phase = status.clone();
         let phase_timeout = if machine.execution.phase_timeout_seconds == 0 {
@@ -501,6 +503,20 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+fn resolve_runtime_config(config: &AppConfig, machine: &mut MachineConfig, no_timeout: bool) -> AppConfig {
+    let mut runtime_config = config.clone();
+    if !no_timeout {
+        return runtime_config;
+    }
+
+    machine.execution.phase_timeout_seconds = 0;
+    runtime_config.local_llm_cli.timeout_seconds = 0;
+    runtime_config.anthropic_cli.timeout_seconds = 0;
+    runtime_config.gemini_cli.timeout_seconds = 0;
+    runtime_config.openai_cli.timeout_seconds = 0;
+    runtime_config
 }
 
 fn reset_status_to_cycle_zero(status: &mut StatusFile) {
@@ -1367,12 +1383,14 @@ mod tests {
         build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
         lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid, parse_spec_bootstrap_response,
         parse_task_breakdown_response, parse_verify_status_counts, process_exists,
-        reset_status_to_cycle_zero,
+        reset_status_to_cycle_zero, resolve_runtime_config,
         release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
     };
     use crate::agent::AgentKind;
+    use crate::config::AppConfig;
     use crate::core::{agent_workspace, status::StatusFile};
     use crate::core::task::TaskStore;
+    use crate::machine_config::MachineConfig;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 
@@ -1545,6 +1563,39 @@ mod tests {
         let (pass, fail) = parse_verify_status_counts(content);
         assert_eq!(pass, 2);
         assert_eq!(fail, 1);
+    }
+
+    #[test]
+    fn resolve_runtime_config_disables_all_timeouts_when_no_timeout_is_enabled() {
+        let mut machine = MachineConfig::default();
+        let config = AppConfig::from_env();
+        let runtime = resolve_runtime_config(&config, &mut machine, true);
+
+        assert_eq!(machine.execution.phase_timeout_seconds, 0);
+        assert_eq!(runtime.local_llm_cli.timeout_seconds, 0);
+        assert_eq!(runtime.anthropic_cli.timeout_seconds, 0);
+        assert_eq!(runtime.gemini_cli.timeout_seconds, 0);
+        assert_eq!(runtime.openai_cli.timeout_seconds, 0);
+    }
+
+    #[test]
+    fn resolve_runtime_config_keeps_timeouts_when_no_timeout_is_disabled() {
+        let mut machine = MachineConfig::default();
+        machine.execution.phase_timeout_seconds = 120;
+
+        let mut config = AppConfig::from_env();
+        config.local_llm_cli.timeout_seconds = 121;
+        config.anthropic_cli.timeout_seconds = 122;
+        config.gemini_cli.timeout_seconds = 123;
+        config.openai_cli.timeout_seconds = 124;
+
+        let runtime = resolve_runtime_config(&config, &mut machine, false);
+
+        assert_eq!(machine.execution.phase_timeout_seconds, 120);
+        assert_eq!(runtime.local_llm_cli.timeout_seconds, 121);
+        assert_eq!(runtime.anthropic_cli.timeout_seconds, 122);
+        assert_eq!(runtime.gemini_cli.timeout_seconds, 123);
+        assert_eq!(runtime.openai_cli.timeout_seconds, 124);
     }
 
     #[tokio::test]

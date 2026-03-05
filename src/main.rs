@@ -83,6 +83,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             enforce_lock,
             spec,
             reset_cycle,
+            no_timeout,
         } => {
             let config = orcha::config::AppConfig::from_orch_dir(&cli.orch_dir)?;
             orcha::cli::run::execute(
@@ -91,6 +92,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 !enforce_lock,
                 spec.as_deref(),
                 reset_cycle,
+                no_timeout,
             )
             .await?;
         }

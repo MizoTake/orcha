@@ -45,6 +45,10 @@ pub enum Command {
         /// Reset status to cycle 0 / briefing before execution.
         #[arg(long, default_value_t = false)]
         reset_cycle: bool,
+
+        /// Disable all timeouts for this run (phase + provider CLI timeouts).
+        #[arg(long, default_value_t = false)]
+        no_timeout: bool,
     },
 
     /// Display current status
@@ -85,6 +89,7 @@ mod tests {
                 enforce_lock: false,
                 spec: None,
                 reset_cycle: false,
+                no_timeout: false,
             }
         ));
         assert_eq!(cli.orch_dir, PathBuf::from(".orch"));
@@ -99,6 +104,7 @@ mod tests {
                 enforce_lock: true,
                 spec: None,
                 reset_cycle: false,
+                no_timeout: false,
             }
         ));
     }
@@ -112,6 +118,7 @@ mod tests {
                 enforce_lock: false,
                 spec: Some(_),
                 reset_cycle: false,
+                no_timeout: false,
             }
         ));
     }
@@ -125,6 +132,21 @@ mod tests {
                 enforce_lock: false,
                 spec: None,
                 reset_cycle: true,
+                no_timeout: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_accepts_no_timeout_flag_for_run() {
+        let cli = Cli::parse_from(["orcha", "run", "--no-timeout"]);
+        assert!(matches!(
+            cli.command,
+            Command::Run {
+                enforce_lock: false,
+                spec: None,
+                reset_cycle: false,
+                no_timeout: true,
             }
         ));
     }
