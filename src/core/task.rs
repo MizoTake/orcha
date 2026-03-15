@@ -72,7 +72,9 @@ pub struct Task {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskFrontmatter {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub owner: String,
