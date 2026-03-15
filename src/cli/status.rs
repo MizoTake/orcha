@@ -6,7 +6,7 @@ use comfy_table::{Cell, Color, Table};
 
 use crate::core::error::OrchaError;
 use crate::core::health::Health;
-use crate::core::status::StatusFile;
+use crate::core::status::{ReviewStatus, StatusFile, VerifyStatus};
 use crate::core::task::{TaskState, TaskStore};
 use crate::core::agent_workspace;
 use crate::machine_config::MachineConfig;
@@ -37,8 +37,13 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     let tasks: Vec<_> = task_entries.iter().map(|e| e.to_task()).collect();
 
     let health = Health::evaluate(
-        &tasks, None, // No verify result available from just reading status
-        false,
+        &tasks,
+        match status.frontmatter.verify_status {
+            Some(VerifyStatus::Pass) => Some(true),
+            Some(VerifyStatus::Fail) => Some(false),
+            _ => None,
+        },
+        status.frontmatter.review_status == ReviewStatus::IssuesFound,
     );
 
     // Header
@@ -80,6 +85,22 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
         "  Budget:  {}/{}",
         status.frontmatter.budget.paid_calls_used, status.frontmatter.budget.paid_calls_limit
     );
+    if !status.frontmatter.disabled_agents.is_empty() {
+        let disabled = status
+            .frontmatter
+            .disabled_agents
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  Disabled agents: {}", disabled);
+    }
+    if let Some(verify_status) = &status.frontmatter.verify_status {
+        println!("  Verify: {}", format!("{verify_status:?}").to_lowercase());
+    }
+    if status.frontmatter.review_status == ReviewStatus::IssuesFound {
+        println!("  Review: must-fix remaining");
+    }
     println!();
 
     // Lock info
@@ -100,9 +121,10 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
 
         for t in &tasks {
             let state_color = match t.state {
-                TaskState::Issue => Color::White,
-                TaskState::Wip => Color::Yellow,
+                TaskState::Todo => Color::White,
+                TaskState::Doing => Color::Yellow,
                 TaskState::Done => Color::Green,
+                TaskState::Blocked => Color::Red,
             };
             table.add_row(vec![
                 Cell::new(&t.id),
@@ -117,14 +139,15 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     // Summary counts
     let total = tasks.len();
     let done = tasks.iter().filter(|t| t.state == TaskState::Done).count();
-    let wip = tasks.iter().filter(|t| t.state == TaskState::Wip).count();
-    let issue = tasks.iter().filter(|t| t.state == TaskState::Issue).count();
+    let doing = tasks.iter().filter(|t| t.state == TaskState::Doing).count();
+    let todo = tasks.iter().filter(|t| t.state == TaskState::Todo).count();
+    let blocked = tasks.iter().filter(|t| t.state == TaskState::Blocked).count();
 
     if total > 0 {
         println!();
         println!(
-            "  Progress: {}/{} done, {} wip, {} issue",
-            done, total, wip, issue
+            "  Progress: {}/{} done, {} doing, {} todo, {} blocked",
+            done, total, doing, todo, blocked
         );
     }
 

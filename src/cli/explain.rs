@@ -8,7 +8,7 @@ use crate::core::error::OrchaError;
 use crate::core::gate;
 use crate::core::health::Health;
 use crate::core::profile;
-use crate::core::status::StatusFile;
+use crate::core::status::{ReviewStatus, StatusFile, VerifyStatus};
 use crate::core::task::TaskStore;
 use crate::machine_config::MachineConfig;
 use crate::machine_config::ProviderMode;
@@ -102,9 +102,35 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     println!();
 
     // Health
-    let health = Health::evaluate(&tasks, None, false);
+    let health = Health::evaluate(
+        &tasks,
+        match status.frontmatter.verify_status {
+            Some(VerifyStatus::Pass) => Some(true),
+            Some(VerifyStatus::Fail) => Some(false),
+            _ => None,
+        },
+        status.frontmatter.review_status == ReviewStatus::IssuesFound,
+    );
     println!("{}", "Health:".bold());
     println!("  {}", health);
+    println!();
+    println!(
+        "  Review status:     {}",
+        if status.frontmatter.review_status == ReviewStatus::IssuesFound {
+            "issues_found"
+        } else {
+            "clean"
+        }
+    );
+    println!(
+        "  Verify status:     {}",
+        status
+            .frontmatter
+            .verify_status
+            .as_ref()
+            .map(|state| format!("{state:?}").to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
     println!();
 
     // Available agents
@@ -140,15 +166,33 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
             "not configured".red().to_string()
         }
     );
+    if !status.frontmatter.disabled_agents.is_empty() {
+        println!(
+            "  disabled:  {}",
+            status
+                .frontmatter
+                .disabled_agents
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!();
 
     // Gate evaluation (current state)
     println!("{}", "Gate Status:".bold());
-    let size_gate = gate::evaluate_size_gate(0);
+    let diff = git_diff().await;
+    let changed_files = git_changed_files().await;
+    let diff_lines = diff.as_ref().map(|text| text.lines().count()).unwrap_or(0);
+    let size_gate = gate::evaluate_size_gate(diff_lines);
     println!("  Size gate:     {:?}", size_gate);
-    let security_gate = gate::evaluate_security_gate(None, &[]);
+    let security_gate = gate::evaluate_security_gate(diff.as_deref(), &changed_files);
     println!("  Security gate: {:?}", security_gate);
-    let unblock_gate = gate::evaluate_unblock_gate(0, &profile_rules);
+    let unblock_gate = gate::evaluate_unblock_gate(
+        status.frontmatter.consecutive_verify_failures,
+        &profile_rules,
+    );
     println!("  Unblock gate:  {:?}", unblock_gate);
     println!();
 
@@ -160,4 +204,41 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     );
 
     Ok(())
+}
+
+async fn git_diff() -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "HEAD"])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+    if diff.trim().is_empty() {
+        None
+    } else {
+        Some(diff)
+    }
+}
+
+async fn git_changed_files() -> Vec<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }

@@ -178,6 +178,10 @@ budget:
 locks:
   writer:
   active_task:
+review_status:
+verify_status:
+consecutive_verify_failures:
+disabled_agents:
 ---
 ```
 
@@ -392,6 +396,8 @@ profile変更 (local_only / cheap_checkpoints / quality_gate / unblock_first / o
 ## 15. Stop Conditions
 
 * cycle >= 5
+* verification commands 未設定
+* blocked task が存在
 * 同一失敗2回 + 有料不可
 * profile=local_only で詰まり
 
@@ -428,6 +434,9 @@ src/
 
 `run` / `explain` は `.orcha/orcha.yml` を読み込む。  
 環境変数は主に API キー解決に使い、変数名そのものは `orcha.yml` の `agents.*.api_key_env` で指定する。
+
+補足:
+* `execution.human_escalation.on_ambiguous_spec` は `run --spec` の spec bootstrap 時のみ曖昧点検出に利用する。
 
 | 変数名 | 用途 | デフォルト |
 |---|---|---|
