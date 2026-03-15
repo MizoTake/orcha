@@ -380,6 +380,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_frontmatter_parses_without_id_or_title() {
+        // Agent-generated task files may omit id/title; #[serde(default)] must handle this.
+        let raw = "---\nowner: agent\ncreated: '2026-01-01T00:00:00Z'\n---\n\n## Description\nDo something\n";
+        let doc: crate::markdown::frontmatter::Document<TaskFrontmatter> =
+            crate::markdown::frontmatter::parse(raw).unwrap();
+        assert_eq!(doc.frontmatter.id, "");
+        assert_eq!(doc.frontmatter.title, "");
+        assert_eq!(doc.frontmatter.owner, "agent");
+    }
+
+    #[test]
     fn parse_empty_table() {
         let table =
             "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n";

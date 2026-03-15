@@ -133,4 +133,47 @@ mod tests {
         assert_eq!(status.frontmatter.cycle, 3);
     }
 
+    #[test]
+    fn verify_status_defaults_to_none_for_existing_files() {
+        // Status files written before verify_status was added must still parse OK.
+        let status = StatusFile::from_str(sample_status()).unwrap();
+        assert_eq!(status.frontmatter.verify_status, None);
+    }
+
+    #[test]
+    fn verify_status_roundtrips_pass_and_fail() {
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+
+        status.frontmatter.verify_status = Some(VerifyStatus::Pass);
+        let serialized = crate::markdown::frontmatter::serialize(&crate::markdown::frontmatter::Document {
+            frontmatter: status.frontmatter.clone(),
+            content: status.content.clone(),
+        })
+        .unwrap();
+        let reparsed = StatusFile::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.frontmatter.verify_status, Some(VerifyStatus::Pass));
+
+        status.frontmatter.verify_status = Some(VerifyStatus::Fail);
+        let serialized = crate::markdown::frontmatter::serialize(&crate::markdown::frontmatter::Document {
+            frontmatter: status.frontmatter.clone(),
+            content: status.content.clone(),
+        })
+        .unwrap();
+        let reparsed = StatusFile::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.frontmatter.verify_status, Some(VerifyStatus::Fail));
+    }
+
+    #[test]
+    fn verify_status_none_is_not_serialized() {
+        // None should be omitted from the YAML output (skip_serializing_if).
+        let status = StatusFile::from_str(sample_status()).unwrap();
+        assert_eq!(status.frontmatter.verify_status, None);
+        let serialized = crate::markdown::frontmatter::serialize(&crate::markdown::frontmatter::Document {
+            frontmatter: status.frontmatter.clone(),
+            content: status.content.clone(),
+        })
+        .unwrap();
+        assert!(!serialized.contains("verify_status"));
+    }
+
 }

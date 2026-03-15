@@ -405,7 +405,7 @@ pub async fn execute(
                     None
                 };
 
-                let is_empty_stdout = err.to_string().contains("returned empty stdout");
+                let is_empty_stdout = is_empty_stdout_error(&err);
                 if is_empty_stdout && empty_stdout_retries < MAX_EMPTY_STDOUT_RETRIES {
                     empty_stdout_retries += 1;
                     let detail = format!(
@@ -1320,6 +1320,10 @@ fn lock_id_for_pid(pid: u32) -> String {
     format!("orch-{pid}")
 }
 
+fn is_empty_stdout_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("returned empty stdout")
+}
+
 fn detect_limit_reached_cli_agent(err: &anyhow::Error) -> Option<AgentKind> {
     let msg = err.to_string().to_lowercase();
     if !msg.contains("local cli '") {
@@ -1404,9 +1408,9 @@ async fn process_exists(pid: u32) -> bool {
 mod tests {
     use super::{
         build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
-        lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid, parse_spec_bootstrap_response,
-        parse_task_breakdown_response, parse_verify_status_counts, process_exists,
-        reset_status_to_cycle_zero, resolve_runtime_config,
+        is_empty_stdout_error, lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
+        parse_spec_bootstrap_response, parse_task_breakdown_response, parse_verify_status_counts,
+        process_exists, reset_status_to_cycle_zero, resolve_runtime_config,
         release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
     };
     use crate::agent::AgentKind;
@@ -1422,6 +1426,18 @@ mod tests {
             "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: {}\n  active_task: null\n---\n\n## Goal\n\nBuild the thing.\n",
             writer
         )
+    }
+
+    #[test]
+    fn empty_stdout_error_is_detected() {
+        let err = anyhow::anyhow!("Local CLI 'opencode-cli' returned empty stdout");
+        assert!(is_empty_stdout_error(&err));
+    }
+
+    #[test]
+    fn non_empty_stdout_error_is_not_detected() {
+        let err = anyhow::anyhow!("Local CLI 'opencode-cli' failed with exit code Some(1): boom");
+        assert!(!is_empty_stdout_error(&err));
     }
 
     #[test]
