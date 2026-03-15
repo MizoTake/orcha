@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentKind;
 use crate::core::cycle::Phase;
 use crate::core::profile::ProfileName;
 use crate::markdown::frontmatter::{self, Document};
@@ -11,6 +12,15 @@ use crate::markdown::frontmatter::{self, Document};
 pub enum VerifyStatus {
     Pass,
     Fail,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    #[default]
+    Clean,
+    IssuesFound,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,8 +32,14 @@ pub struct StatusFrontmatter {
     pub last_update: String,
     pub budget: Budget,
     pub locks: Locks,
+    #[serde(default)]
+    pub review_status: ReviewStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_status: Option<VerifyStatus>,
+    #[serde(default)]
+    pub consecutive_verify_failures: u32,
+    #[serde(default)]
+    pub disabled_agents: Vec<AgentKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +100,20 @@ impl StatusFile {
     pub fn start_new_cycle(&mut self) {
         self.frontmatter.cycle += 1;
         self.frontmatter.phase = Phase::Briefing;
+        self.frontmatter.review_status = ReviewStatus::Clean;
+        self.frontmatter.verify_status = None;
+        self.frontmatter.locks.active_task = None;
         self.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
+    }
+
+    pub fn sync_disabled_agents<I>(&mut self, agents: I)
+    where
+        I: IntoIterator<Item = AgentKind>,
+    {
+        let mut disabled = agents.into_iter().collect::<Vec<_>>();
+        disabled.sort_by_key(|kind| kind.to_string());
+        disabled.dedup();
+        self.frontmatter.disabled_agents = disabled;
     }
 }
 
@@ -93,7 +122,7 @@ mod tests {
     use super::*;
 
     fn sample_status() -> &'static str {
-        "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: null\n  active_task: null\n---\n\n## Goal\n\nBuild the thing.\n\n## Latest Notes\n\nInitialized.\n"
+        "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: null\n  active_task: null\nreview_status: clean\nconsecutive_verify_failures: 0\ndisabled_agents: []\n---\n\n## Goal\n\nBuild the thing.\n\n## Latest Notes\n\nInitialized.\n"
     }
 
     #[test]
@@ -164,6 +193,21 @@ mod tests {
     }
 
     #[test]
+    fn verify_status_roundtrips_skipped() {
+        let mut status = StatusFile::from_str(sample_status()).unwrap();
+
+        status.frontmatter.verify_status = Some(VerifyStatus::Skipped);
+        let serialized =
+            crate::markdown::frontmatter::serialize(&crate::markdown::frontmatter::Document {
+                frontmatter: status.frontmatter.clone(),
+                content: status.content.clone(),
+            })
+            .unwrap();
+        let reparsed = StatusFile::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.frontmatter.verify_status, Some(VerifyStatus::Skipped));
+    }
+
+    #[test]
     fn verify_status_none_is_not_serialized() {
         // None should be omitted from the YAML output (skip_serializing_if).
         let status = StatusFile::from_str(sample_status()).unwrap();
@@ -176,4 +220,12 @@ mod tests {
         assert!(!serialized.contains("verify_status"));
     }
 
+    #[test]
+    fn new_frontmatter_fields_default_for_legacy_status() {
+        let raw = "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 0\n  paid_calls_limit: 10\nlocks:\n  writer: null\n  active_task: null\n---\n\n## Goal\n\nBuild the thing.\n";
+        let status = StatusFile::from_str(raw).unwrap();
+        assert_eq!(status.frontmatter.review_status, ReviewStatus::Clean);
+        assert_eq!(status.frontmatter.consecutive_verify_failures, 0);
+        assert!(status.frontmatter.disabled_agents.is_empty());
+    }
 }

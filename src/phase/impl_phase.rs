@@ -10,7 +10,7 @@ use crate::core::task::{TaskState, TaskStore};
 use crate::core::workspace_md;
 
 /// Phase 3: Implementation
-/// Implementer agent executes the next `issue` task.
+/// Implementer agent executes the next `todo` task.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
@@ -19,14 +19,17 @@ pub async fn execute(
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
-    // Find the next issue task
+    // Find the next todo task
     let next_task = task_store.next_issue().await?;
     let mut task_entry = match next_task {
         Some(entry) => entry,
         None => {
-            // No issue tasks — check if all done
+            // No todo tasks — check if all actionable work is finished
             let all = task_store.list_all().await?;
-            if all.iter().all(|t| t.state == TaskState::Done) {
+            if all
+                .iter()
+                .all(|t| matches!(t.state, TaskState::Done | TaskState::Blocked))
+            {
                 status_log::append(
                     &log_path,
                     "impl",
@@ -42,22 +45,23 @@ pub async fn execute(
                 "impl",
                 "implementer",
                 "orch",
-                "No issue tasks available (some may be wip)",
+                "No todo tasks available (some may be doing or blocked)",
             )
             .await?;
             return Ok(CycleDecision::NextPhase);
         }
     };
 
-    // Move task from issue → wip
+    // Move task from todo → doing
     let file_name = task_entry.file_name.clone();
     let task_id = task_entry.frontmatter.id.clone();
     let task_title = task_entry.frontmatter.title.clone();
     task_entry.frontmatter.owner = "local_llm".to_string();
+    let diff_before = changed_files_snapshot().await;
     task_store
-        .move_task(&file_name, TaskState::Issue, TaskState::Wip)
+        .move_task(&file_name, TaskState::Todo, TaskState::Doing)
         .await?;
-    task_entry.state = TaskState::Wip;
+    task_entry.state = TaskState::Doing;
     task_store.update_task(&task_entry).await?;
     status.frontmatter.locks.active_task = Some(task_id.clone());
 
@@ -103,6 +107,10 @@ pub async fn execute(
     let gate_ctx = GateContext::default();
     let agent = router.select(Phase::Impl, &gate_ctx);
     let response = agent.respond(&context).await?;
+    if response.is_paid {
+        status.frontmatter.budget.paid_calls_used =
+            status.frontmatter.budget.paid_calls_used.saturating_add(1);
+    }
     crate::core::agent_workspace::write_response(
         orch_dir,
         status.frontmatter.cycle,
@@ -113,16 +121,56 @@ pub async fn execute(
     )
     .await?;
 
-    // Move task from wip → done, update content with evidence
-    task_store
-        .move_task(&file_name, TaskState::Wip, TaskState::Done)
-        .await?;
-    task_entry.state = TaskState::Done;
-    task_entry.frontmatter.owner = response.model_used.clone();
+    let diff_after = changed_files_snapshot().await;
+    let repo_changed = diff_after != diff_before;
 
-    // Append evidence to the task content
-    let evidence_section = format!("impl completed by {}", response.model_used);
+    // Append evidence to the task content before deciding final state.
+    let evidence_section = format!(
+        "impl response by {}\n\n{}",
+        response.model_used,
+        response.content.trim()
+    );
     update_section(&mut task_entry.content, "Evidence", &evidence_section);
+    if repo_changed {
+        task_store
+            .move_task(&file_name, TaskState::Doing, TaskState::Done)
+            .await?;
+        task_entry.state = TaskState::Done;
+        task_entry.frontmatter.owner = response.model_used.clone();
+        task_store.update_task(&task_entry).await?;
+        status.frontmatter.locks.active_task = None;
+
+        status_log::append(
+            &log_path,
+            "impl",
+            "implementer",
+            &response.model_used,
+            &format!("Completed task {}: {}", task_id, task_title),
+        )
+        .await?;
+
+        // Write the implementation response to outbox for external tools
+        let outbox_path = workspace_md::resolve_handoff_file(orch_dir, "outbox")?;
+        crate::core::handoff::append_handoff(
+            &outbox_path,
+            &format!("implementer({})", response.model_used),
+            &response.content,
+        )
+        .await?;
+
+        return Ok(CycleDecision::NextPhase);
+    }
+
+    task_store
+        .move_task(&file_name, TaskState::Doing, TaskState::Blocked)
+        .await?;
+    task_entry.state = TaskState::Blocked;
+    task_entry.frontmatter.owner = response.model_used.clone();
+    update_section(
+        &mut task_entry.content,
+        "Notes",
+        "Implementation response did not produce repository changes. Human follow-up required.",
+    );
     task_store.update_task(&task_entry).await?;
     status.frontmatter.locks.active_task = None;
 
@@ -131,20 +179,17 @@ pub async fn execute(
         "impl",
         "implementer",
         &response.model_used,
-        &format!("Completed task {}: {}", task_id, task_title),
+        &format!(
+            "Blocked task {}: implementation response did not change repository state",
+            task_id
+        ),
     )
     .await?;
 
-    // Write the implementation response to outbox for external tools
-    let outbox_path = workspace_md::resolve_handoff_file(orch_dir, "outbox")?;
-    crate::core::handoff::append_handoff(
-        &outbox_path,
-        &format!("implementer({})", response.model_used),
-        &response.content,
-    )
-    .await?;
-
-    Ok(CycleDecision::NextPhase)
+    Ok(CycleDecision::Escalate(format!(
+        "Implementation did not produce repository changes for task {}",
+        task_id
+    )))
 }
 
 fn update_section(content: &mut String, heading: &str, new_text: &str) {
@@ -164,4 +209,24 @@ fn update_section(content: &mut String, heading: &str, new_text: &str) {
             &content[section_end..]
         );
     }
+}
+
+async fn changed_files_snapshot() -> Vec<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }

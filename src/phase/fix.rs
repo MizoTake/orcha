@@ -4,7 +4,7 @@ use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
 use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
-use crate::core::status::StatusFile;
+use crate::core::status::{ReviewStatus, StatusFile};
 use crate::core::status_log;
 use crate::core::workspace_md;
 
@@ -63,12 +63,18 @@ pub async fn execute(
         instruction:
             "Review the must-fix items from the review phase and apply the necessary fixes.\n\
              The review findings are in the Latest Notes section of status.md.\n\
-             Provide the fixes and evidence of completion."
+             End your response with `Resolved: yes` only when every must-fix item is addressed.\n\
+             Otherwise end with `Resolved: no` and explain the remaining blocker."
                 .to_string(),
     };
 
     let agent = router.default_agent();
+    let diff_before = changed_files_snapshot().await;
     let response = agent.respond(&context).await?;
+    if response.is_paid {
+        status.frontmatter.budget.paid_calls_used =
+            status.frontmatter.budget.paid_calls_used.saturating_add(1);
+    }
     crate::core::agent_workspace::write_response(
         orch_dir,
         status.frontmatter.cycle,
@@ -78,6 +84,27 @@ pub async fn execute(
         &response.content,
     )
     .await?;
+
+    let resolved = response.content.contains("Resolved: yes");
+    let diff_after = changed_files_snapshot().await;
+    let repo_changed = diff_before != diff_after;
+
+    if !resolved || !repo_changed {
+        status.frontmatter.review_status = ReviewStatus::IssuesFound;
+        status_log::append(
+            &log_path,
+            "fix",
+            "implementer",
+            &response.model_used,
+            "Fix phase could not verify all must-fix items as resolved",
+        )
+        .await?;
+        return Ok(CycleDecision::Escalate(
+            "Fix phase did not resolve all must-fix items".to_string(),
+        ));
+    }
+
+    status.frontmatter.review_status = ReviewStatus::Clean;
 
     status_log::append(
         &log_path,
@@ -98,4 +125,24 @@ pub async fn execute(
     .await?;
 
     Ok(CycleDecision::NextPhase)
+}
+
+async fn changed_files_snapshot() -> Vec<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }

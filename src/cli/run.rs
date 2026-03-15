@@ -57,7 +57,7 @@ pub async fn execute(
     let runtime_config = resolve_runtime_config(config, &mut machine, no_timeout);
     let max_cycles = machine.execution.max_cycles;
     let max_consecutive_verify_failures = machine.execution.max_consecutive_verify_failures.max(1);
-    let mut consecutive_verify_failures = 0u32;
+    let mut consecutive_verify_failures = status.frontmatter.consecutive_verify_failures;
 
     // Check stop conditions
     if max_cycles > 0 && status.frontmatter.cycle >= max_cycles {
@@ -127,8 +127,12 @@ pub async fn execute(
 
         let (_resolved_profile_ref, resolved_profile_name, profile_rules) =
             resolve_profile_rules_for_cycle(orch_dir, &machine, &status, true)?;
-        let router = AgentRouter::new(&runtime_config, &profile_rules, &disabled_agents_by_cli_limit)?;
+        let mut disabled_agents = disabled_agents_by_cli_limit.clone();
+        disabled_agents.extend(disabled_paid_agents_for_budget(&status, &runtime_config));
+        let router = AgentRouter::new(&runtime_config, &profile_rules, &disabled_agents)?;
         status.frontmatter.profile = resolved_profile_name;
+        status.sync_disabled_agents(disabled_agents.iter().copied());
+        status.frontmatter.consecutive_verify_failures = consecutive_verify_failures;
         let status_before_phase = status.clone();
         let phase_timeout = if machine.execution.phase_timeout_seconds == 0 {
             None
@@ -303,6 +307,7 @@ pub async fn execute(
                     let verify_failed = status.frontmatter.verify_status == Some(VerifyStatus::Fail);
                     if verify_failed {
                         consecutive_verify_failures = consecutive_verify_failures.saturating_add(1);
+                        status.frontmatter.consecutive_verify_failures = consecutive_verify_failures;
                         let detail = format!(
                             "Verification failed consecutively: {}/{}",
                             consecutive_verify_failures, max_consecutive_verify_failures
@@ -363,8 +368,39 @@ pub async fn execute(
                             );
                             stop = true;
                         }
+
+                        if !stop
+                            && profile_rules.is_paid_available()
+                            && !has_paid_agent_available(&runtime_config, &disabled_agents)
+                        {
+                            let reason = StopReason::RepeatedFailureNoPaid.to_string();
+                            status_log::append(
+                                &log_path,
+                                "decide",
+                                "planner",
+                                "orch",
+                                &reason,
+                            )
+                            .await?;
+                            append_structured_event(
+                                orch_dir,
+                                &status,
+                                phase,
+                                "stop_condition",
+                                &reason,
+                            )
+                            .await;
+                            terminal_error = Some(
+                                OrchaError::StopCondition {
+                                    reason,
+                                }
+                                .into(),
+                            );
+                            stop = true;
+                        }
                     } else if consecutive_verify_failures > 0 {
                         consecutive_verify_failures = 0;
+                        status.frontmatter.consecutive_verify_failures = 0;
                     }
 
                     if !stop && consecutive_verify_failures >= max_consecutive_verify_failures {
@@ -546,6 +582,9 @@ fn reset_status_to_cycle_zero(status: &mut StatusFile) {
     status.frontmatter.cycle = 0;
     status.frontmatter.phase = Phase::Briefing;
     status.frontmatter.locks.active_task = None;
+    status.frontmatter.review_status = crate::core::status::ReviewStatus::Clean;
+    status.frontmatter.verify_status = None;
+    status.frontmatter.consecutive_verify_failures = 0;
     status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
 }
 
@@ -928,13 +967,13 @@ fn full_spec_bootstrap_instruction() -> &'static str {
 2) A markdown task table in this exact format:\n\
 | ID | Title | State | Owner | Evidence | Notes |\n\
 |---|---|---|---|---|---|\n\
-| T1 | Task title | issue | implementer | | reason |\n\
+| T1 | Task title | todo | implementer | | reason |\n\
 \n\
 Rules:\n\
 - Keep acceptance_criteria concrete and testable.\n\
 - verification_commands must be runnable shell commands.\n\
 - Put uncertain points in ambiguities.\n\
-- State must be issue for all initial tasks."
+- State must be todo for all initial tasks."
 }
 
 fn task_breakdown_instruction() -> &'static str {
@@ -942,11 +981,11 @@ fn task_breakdown_instruction() -> &'static str {
 Return a markdown task table in this exact format:\n\
 | ID | Title | State | Owner | Evidence | Notes |\n\
 |---|---|---|---|---|---|\n\
-| T1 | Task title | issue | implementer | | reason |\n\
+| T1 | Task title | todo | implementer | | reason |\n\
 \n\
 Rules:\n\
 - Create atomic tasks that can be completed in short cycles.\n\
-- Set State to issue for all rows.\n\
+- Set State to todo for all rows.\n\
 - Keep IDs sequential as T1, T2, T3..."
 }
 
@@ -1057,7 +1096,7 @@ fn tasks_from_criteria(criteria: &[String]) -> Vec<Task> {
         .map(|(idx, criterion)| Task {
             id: format!("T{}", idx + 1),
             title: sanitize_markdown_cell(criterion),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             owner: "implementer".to_string(),
             evidence: String::new(),
             notes: "Generated from spec acceptance criteria".to_string(),
@@ -1079,7 +1118,7 @@ async fn create_task_files_from_tasks(task_store: &TaskStore, tasks: &[Task]) ->
                 "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
                 task.title, task.notes
             ),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name,
         };
         task_store.create_task(&entry).await?;
@@ -1360,6 +1399,30 @@ fn is_limit_message(msg: &str) -> bool {
     NEEDLES.iter().any(|needle| msg.contains(needle))
 }
 
+fn disabled_paid_agents_for_budget(status: &StatusFile, config: &AppConfig) -> HashSet<AgentKind> {
+    if status.frontmatter.budget.paid_calls_used < status.frontmatter.budget.paid_calls_limit {
+        return HashSet::new();
+    }
+
+    let mut disabled = HashSet::new();
+    if config.has_anthropic() {
+        disabled.insert(AgentKind::Claude);
+    }
+    if config.has_gemini() {
+        disabled.insert(AgentKind::Gemini);
+    }
+    if config.has_openai() {
+        disabled.insert(AgentKind::Codex);
+    }
+    disabled
+}
+
+fn has_paid_agent_available(config: &AppConfig, disabled_agents: &HashSet<AgentKind>) -> bool {
+    (config.has_anthropic() && !disabled_agents.contains(&AgentKind::Claude))
+        || (config.has_gemini() && !disabled_agents.contains(&AgentKind::Gemini))
+        || (config.has_openai() && !disabled_agents.contains(&AgentKind::Codex))
+}
+
 async fn is_stale_writer_lock(writer: &str) -> bool {
     let Some(pid) = parse_lock_pid(writer) else {
         return false;
@@ -1408,7 +1471,8 @@ async fn process_exists(pid: u32) -> bool {
 mod tests {
     use super::{
         build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
-        is_empty_stdout_error, lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
+        disabled_paid_agents_for_budget, has_paid_agent_available, is_empty_stdout_error,
+        lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
         parse_spec_bootstrap_response, parse_task_breakdown_response, parse_verify_status_counts,
         process_exists, reset_status_to_cycle_zero, resolve_runtime_config,
         release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
@@ -1481,6 +1545,8 @@ mod tests {
         assert_eq!(status.frontmatter.phase.to_string(), "briefing");
         assert_eq!(status.frontmatter.locks.active_task, None);
         assert_eq!(status.frontmatter.locks.writer, Some("orch-9999".to_string()));
+        assert_eq!(status.frontmatter.consecutive_verify_failures, 0);
+        assert_eq!(status.frontmatter.verify_status, None);
     }
 
     #[test]
@@ -1561,8 +1627,8 @@ mod tests {
 
 | ID | Title | State | Owner | Evidence | Notes |
 |---|---|---|---|---|---|
-| T1 | Add create API | issue | implementer | | from spec |
-| T2 | Add list API | issue | implementer | | from spec |
+| T1 | Add create API | todo | implementer | | from spec |
+| T2 | Add list API | todo | implementer | | from spec |
 "#;
 
         let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
@@ -1637,6 +1703,25 @@ mod tests {
         assert_eq!(runtime.openai_cli.timeout_seconds, 124);
     }
 
+    #[test]
+    fn paid_agents_are_disabled_when_budget_is_exhausted() {
+        let mut config = AppConfig::from_env();
+        config.anthropic_api_key = Some("a".into());
+        config.gemini_api_key = Some("g".into());
+        config.openai_api_key = Some("o".into());
+
+        let status = StatusFile::from_str(
+            "---\nrun_id: test-001\nprofile: cheap_checkpoints\ncycle: 1\nphase: plan\nlast_update: '2025-01-01T00:00:00Z'\nbudget:\n  paid_calls_used: 2\n  paid_calls_limit: 2\nlocks:\n  writer: null\n  active_task: null\n---\n\n## Goal\n\nBuild the thing.\n",
+        )
+        .expect("status should parse");
+
+        let disabled = disabled_paid_agents_for_budget(&status, &config);
+        assert!(disabled.contains(&AgentKind::Claude));
+        assert!(disabled.contains(&AgentKind::Gemini));
+        assert!(disabled.contains(&AgentKind::Codex));
+        assert!(!has_paid_agent_available(&config, &disabled));
+    }
+
     #[tokio::test]
     async fn resolve_bootstrap_request_defaults_to_goal_when_tasks_missing() {
         let temp = TempDir::new().expect("temp dir should be created");
@@ -1685,7 +1770,7 @@ mod tests {
                 created: String::new(),
             },
             content: String::new(),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name: "T1-setup.md".into(),
         };
         task_store.create_task(&entry).await.unwrap();
@@ -1706,7 +1791,7 @@ mod tests {
 
     #[test]
     fn parse_task_breakdown_response_uses_table_when_present() {
-        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | issue | implementer | | |\n";
+        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | todo | implementer | | |\n";
         let tasks = parse_task_breakdown_response(response, &[])
             .expect("should parse table");
         assert_eq!(tasks.len(), 1);

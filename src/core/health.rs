@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::task::Task;
+use crate::core::task::{Task, TaskState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,12 +24,20 @@ impl fmt::Display for Health {
 
 impl Health {
     /// Derive health from current state.
-    pub fn evaluate(_tasks: &[Task], verify_passed: Option<bool>, has_review_issues: bool) -> Self {
+    pub fn evaluate(tasks: &[Task], verify_passed: Option<bool>, has_review_issues: bool) -> Self {
         if verify_passed == Some(false) {
             return Health::Red;
         }
 
+        if tasks.iter().any(|task| task.state == TaskState::Blocked) {
+            return Health::Red;
+        }
+
         if has_review_issues {
+            return Health::Yellow;
+        }
+
+        if tasks.iter().any(|task| task.state != TaskState::Done) || verify_passed.is_none() {
             return Health::Yellow;
         }
 
@@ -63,5 +71,31 @@ mod tests {
     #[test]
     fn yellow_when_review_issues() {
         assert_eq!(Health::evaluate(&[], Some(true), true), Health::Yellow);
+    }
+
+    #[test]
+    fn red_when_any_task_is_blocked() {
+        let tasks = vec![Task {
+            id: "T1".into(),
+            title: "x".into(),
+            state: TaskState::Blocked,
+            owner: "".into(),
+            evidence: "".into(),
+            notes: "".into(),
+        }];
+        assert_eq!(Health::evaluate(&tasks, Some(true), false), Health::Red);
+    }
+
+    #[test]
+    fn yellow_when_work_remains_or_verify_unknown() {
+        let tasks = vec![Task {
+            id: "T1".into(),
+            title: "x".into(),
+            state: TaskState::Todo,
+            owner: "".into(),
+            evidence: "".into(),
+            notes: "".into(),
+        }];
+        assert_eq!(Health::evaluate(&tasks, None, false), Health::Yellow);
     }
 }

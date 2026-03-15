@@ -226,6 +226,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn truncate_for_test(s: &str, max_len: usize) -> String {
     truncate(s, max_len)
 }

@@ -103,6 +103,8 @@ pub enum StopReason {
     MaxCyclesReached,
     RepeatedFailureNoPaid,
     LocalOnlyStuck,
+    VerificationNotConfigured,
+    BlockedTasksRequireIntervention,
 }
 
 impl fmt::Display for StopReason {
@@ -114,6 +116,12 @@ impl fmt::Display for StopReason {
             }
             StopReason::LocalOnlyStuck => {
                 write!(f, "Local-only profile and stuck on failure")
+            }
+            StopReason::VerificationNotConfigured => {
+                write!(f, "Verification commands are not configured")
+            }
+            StopReason::BlockedTasksRequireIntervention => {
+                write!(f, "Blocked tasks require human intervention")
             }
         }
     }

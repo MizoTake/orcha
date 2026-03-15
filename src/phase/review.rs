@@ -4,7 +4,7 @@ use crate::agent::router::{AgentRouter, GateContext};
 use crate::agent::{AgentContext, ContextFile};
 use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, Phase};
-use crate::core::status::StatusFile;
+use crate::core::status::{ReviewStatus, StatusFile};
 use crate::core::status_log;
 use crate::core::workspace_md;
 
@@ -77,12 +77,16 @@ pub async fn execute(
     let gate_ctx = GateContext {
         diff_content: diff,
         diff_lines,
-        file_paths: Vec::new(),
-        consecutive_verify_failures: 0,
+        file_paths: changed_file_paths().await,
+        consecutive_verify_failures: status.frontmatter.consecutive_verify_failures,
     };
 
     let agent = router.select(Phase::Review, &gate_ctx);
     let response = agent.respond(&context).await?;
+    if response.is_paid {
+        status.frontmatter.budget.paid_calls_used =
+            status.frontmatter.budget.paid_calls_used.saturating_add(1);
+    }
     crate::core::agent_workspace::write_response(
         orch_dir,
         status.frontmatter.cycle,
@@ -99,6 +103,11 @@ pub async fn execute(
         && !response.content.contains("Must-fix:\nNone");
 
     let needs_paid = response.content.contains("paid_review_required: yes");
+    status.frontmatter.review_status = if has_must_fix {
+        ReviewStatus::IssuesFound
+    } else {
+        ReviewStatus::Clean
+    };
 
     status_log::append(
         &log_path,
@@ -145,6 +154,26 @@ async fn get_git_diff() -> Option<String> {
     } else {
         None
     }
+}
+
+async fn changed_file_paths() -> Vec<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn update_latest_notes(content: &mut String, note: &str) {
