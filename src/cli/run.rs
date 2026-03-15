@@ -110,6 +110,8 @@ pub async fn execute(
 
     let mut terminal_error: Option<anyhow::Error> = None;
     let mut disabled_agents_by_cli_limit: HashSet<AgentKind> = HashSet::new();
+    let mut empty_stdout_retries = 0u32;
+    const MAX_EMPTY_STDOUT_RETRIES: u32 = 2;
     loop {
         // Check stop conditions before each phase step.
         if max_cycles > 0 && status.frontmatter.cycle >= max_cycles {
@@ -226,6 +228,7 @@ pub async fn execute(
         let mut retry_phase = false;
         match result {
             Ok(decision) => {
+                empty_stdout_retries = 0;
                 match &decision {
                     CycleDecision::NextPhase => {
                         status.advance_phase();
@@ -401,7 +404,25 @@ pub async fn execute(
                     None
                 };
 
-                if let Some(agent_kind) = limited_agent {
+                let is_empty_stdout = err.to_string().contains("returned empty stdout");
+                if is_empty_stdout && empty_stdout_retries < MAX_EMPTY_STDOUT_RETRIES {
+                    empty_stdout_retries += 1;
+                    let detail = format!(
+                        "Empty stdout from CLI, retrying phase ({}/{})",
+                        empty_stdout_retries, MAX_EMPTY_STDOUT_RETRIES
+                    );
+                    println!("  {} {}", "⚠".yellow(), detail);
+                    status_log::append(
+                        &log_path,
+                        &phase.to_string(),
+                        phase.role_name(),
+                        "orch",
+                        &detail,
+                    )
+                    .await?;
+                    status = status_before_phase;
+                    retry_phase = true;
+                } else if let Some(agent_kind) = limited_agent {
                     if disabled_agents_by_cli_limit.insert(agent_kind) {
                         println!(
                             "  {} {} limit detected. Disabling for this run and retrying phase.",
