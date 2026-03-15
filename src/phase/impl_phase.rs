@@ -187,9 +187,14 @@ pub async fn execute(
     )
     .await?;
 
+    let failure_reason = implementation_completion_failure_reason(
+        &response.model_used,
+        repo_changed,
+        reported_file_changes,
+    );
     Ok(CycleDecision::Escalate(format!(
-        "Implementation did not provide sufficient completion evidence for task {}",
-        task_id
+        "Task {} could not be completed automatically: {}",
+        task_id, failure_reason
     )))
 }
 
@@ -249,9 +254,31 @@ fn response_reports_file_changes(response: &str) -> bool {
     })
 }
 
+fn implementation_completion_failure_reason(
+    model_used: &str,
+    repo_changed: bool,
+    reported_file_changes: bool,
+) -> String {
+    match (repo_changed, reported_file_changes) {
+        (false, false) => format!(
+            "no repository changes were detected and the response from {} did not include a changed-files report. If this agent is running in HTTP mode, switch the implementation-capable agent to CLI mode.",
+            model_used
+        ),
+        (false, true) => format!(
+            "the response from {} listed changed files, but no repository changes were detected. Check whether the agent can actually edit files in this environment.",
+            model_used
+        ),
+        (true, false) => format!(
+            "repository changes were detected, but the response from {} did not include the required changed-files report.",
+            model_used
+        ),
+        (true, true) => "completion evidence check failed unexpectedly".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::response_reports_file_changes;
+    use super::{implementation_completion_failure_reason, response_reports_file_changes};
 
     #[test]
     fn response_reports_file_changes_when_section_lists_paths() {
@@ -263,5 +290,12 @@ mod tests {
     fn response_reports_file_changes_requires_explicit_section_and_path() {
         let response = "Summary\nUpdated implementation and tests passed.";
         assert!(!response_reports_file_changes(response));
+    }
+
+    #[test]
+    fn failure_reason_mentions_cli_mode_when_no_changes_detected() {
+        let reason = implementation_completion_failure_reason("gpt-4.1", false, false);
+        assert!(reason.contains("CLI mode"));
+        assert!(reason.contains("gpt-4.1"));
     }
 }

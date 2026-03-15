@@ -65,8 +65,9 @@ pub fn orcha_yml() -> &'static str {
     r#"version: 1
 
 agents:
+  # 完走しやすさ優先の既定値です。impl/fix で実ファイルを変更できる CLI agent を推奨します。
   local_llm:
-    mode: "cli" # http | cli
+    mode: "cli" # impl/fix まで自走させる場合は cli 推奨。http は返答テキストのみで止まりやすい
     model: null         # optional, e.g. "openai/gpt-4.1"
     cli:
       command: "opencode-cli"
@@ -101,11 +102,11 @@ execution:
     on_ambiguous_spec: false # true で --spec 時の曖昧点検出で停止して確認要求
     channel: "terminal" # terminal | slack など（現状はinbox通知に記録）
   acceptance_criteria:
-    - "Criterion 1"
-    - "Criterion 2"
+    - "Define repository-specific acceptance criteria here"
   verification:
     commands:
-      - "echo \"replace with actual verification commands\""
+      - "cargo check"
+      - "cargo test --lib"
 "#
 }
 
@@ -145,7 +146,8 @@ None.
 ## Next Actions
 
 1. Configure goal.md with your objective
-2. Run `orcha run` to start
+2. Review `orcha.yml` and ensure at least one implementation-capable CLI agent is configured
+3. Run `orcha run` to start
 
 ## Escalation Rules
 

@@ -92,6 +92,12 @@ pub async fn execute(
 
     if !resolved || !repo_changed || !reported_file_changes {
         status.frontmatter.review_status = ReviewStatus::IssuesFound;
+        let failure_reason = fix_completion_failure_reason(
+            &response.model_used,
+            resolved,
+            repo_changed,
+            reported_file_changes,
+        );
         status_log::append(
             &log_path,
             "fix",
@@ -101,7 +107,7 @@ pub async fn execute(
         )
         .await?;
         return Ok(CycleDecision::Escalate(
-            "Fix phase did not resolve all must-fix items".to_string(),
+            format!("Fix phase could not be completed automatically: {}", failure_reason),
         ));
     }
 
@@ -165,9 +171,42 @@ fn response_reports_file_changes(response: &str) -> bool {
     })
 }
 
+fn fix_completion_failure_reason(
+    model_used: &str,
+    resolved: bool,
+    repo_changed: bool,
+    reported_file_changes: bool,
+) -> String {
+    if !resolved {
+        return format!(
+            "{} did not confirm `Resolved: yes` for every must-fix item.",
+            model_used
+        );
+    }
+    if !repo_changed && !reported_file_changes {
+        return format!(
+            "no repository changes were detected and {} did not include a changed-files report. If this agent is running in HTTP mode, switch the fix-capable agent to CLI mode.",
+            model_used
+        );
+    }
+    if !repo_changed {
+        return format!(
+            "{} reported file changes, but no repository changes were detected.",
+            model_used
+        );
+    }
+    if !reported_file_changes {
+        return format!(
+            "repository changes were detected, but {} did not include the required changed-files report.",
+            model_used
+        );
+    }
+    "fix completion evidence check failed unexpectedly".to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::response_reports_file_changes;
+    use super::{fix_completion_failure_reason, response_reports_file_changes};
 
     #[test]
     fn fix_response_reports_file_changes_when_paths_are_listed() {
@@ -179,5 +218,12 @@ mod tests {
     fn fix_response_without_file_report_is_rejected() {
         let response = "Resolved: yes\nApplied the fix.";
         assert!(!response_reports_file_changes(response));
+    }
+
+    #[test]
+    fn fix_failure_reason_mentions_cli_mode_when_no_changes_detected() {
+        let reason = fix_completion_failure_reason("gpt-4.1", true, false, false);
+        assert!(reason.contains("CLI mode"));
+        assert!(reason.contains("gpt-4.1"));
     }
 }

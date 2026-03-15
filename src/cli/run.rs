@@ -20,7 +20,7 @@ use crate::core::status_log;
 use crate::core::task::{Task, TaskState, TaskStore, TaskEntry, TaskFrontmatter, parse_task_table};
 use crate::core::structured_log;
 use crate::core::workspace_md;
-use crate::machine_config::MachineConfig;
+use crate::machine_config::{MachineConfig, ProviderMode};
 use crate::phase;
 
 /// Execute `orcha run`: continue cycles until goal completion or stop condition.
@@ -93,6 +93,12 @@ pub async fn execute(
 
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
     let mut diff_baseline = collect_git_numstat_snapshot().await;
+
+    let preflight_issues = collect_preflight_issues(&runtime_config, &machine);
+    emit_preflight_issues(&preflight_issues, &log_path).await?;
+    if let Some(reason) = fatal_preflight_reason(&preflight_issues) {
+        return Err(OrchaError::StopCondition { reason }.into());
+    }
 
     if let Some(bootstrap_request) = resolve_bootstrap_request(orch_dir, &task_store, spec_path).await? {
         apply_spec_bootstrap(
@@ -576,6 +582,105 @@ fn resolve_runtime_config(config: &AppConfig, machine: &mut MachineConfig, no_ti
     runtime_config.gemini_cli.timeout_seconds = 0;
     runtime_config.openai_cli.timeout_seconds = 0;
     runtime_config
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreflightSeverity {
+    Warn,
+    Fatal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreflightIssue {
+    severity: PreflightSeverity,
+    message: String,
+}
+
+fn collect_preflight_issues(config: &AppConfig, machine: &MachineConfig) -> Vec<PreflightIssue> {
+    let mut issues = Vec::new();
+
+    if !has_any_cli_agent(config) {
+        issues.push(PreflightIssue {
+            severity: PreflightSeverity::Fatal,
+            message: "No CLI-backed agent is configured. impl/fix require repository changes, so configure at least one agent with mode: \"cli\".".to_string(),
+        });
+    }
+
+    if config.local_llm_mode != ProviderMode::Cli {
+        issues.push(PreflightIssue {
+            severity: PreflightSeverity::Warn,
+            message: "local_llm is configured with mode: \"http\". HTTP backends typically return text only, so impl/fix can stop without repository changes.".to_string(),
+        });
+    }
+
+    if machine.execution.verification.commands.is_empty() {
+        issues.push(PreflightIssue {
+            severity: PreflightSeverity::Fatal,
+            message: "execution.verification.commands is empty. verify will stop the run before completion.".to_string(),
+        });
+    } else if machine
+        .execution
+        .verification
+        .commands
+        .iter()
+        .any(|cmd| is_placeholder_verification_command(cmd))
+    {
+        issues.push(PreflightIssue {
+            severity: PreflightSeverity::Fatal,
+            message: "execution.verification.commands still contains the template placeholder. Replace it with real verification commands before running.".to_string(),
+        });
+    }
+
+    issues
+}
+
+async fn emit_preflight_issues(issues: &[PreflightIssue], log_path: &Path) -> anyhow::Result<()> {
+    for issue in issues {
+        let label = match issue.severity {
+            PreflightSeverity::Warn => "warning",
+            PreflightSeverity::Fatal => "fatal",
+        };
+        let icon = match issue.severity {
+            PreflightSeverity::Warn => "⚠".yellow(),
+            PreflightSeverity::Fatal => "✗".red(),
+        };
+        println!("  {} preflight {}: {}", icon, label, issue.message);
+        status_log::append(
+            log_path,
+            "preflight",
+            "orch",
+            "orch",
+            &format!("{}: {}", label, issue.message),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn fatal_preflight_reason(issues: &[PreflightIssue]) -> Option<String> {
+    let messages = issues
+        .iter()
+        .filter(|issue| issue.severity == PreflightSeverity::Fatal)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
+    if messages.is_empty() {
+        None
+    } else {
+        Some(format!("Preflight failed: {}", messages.join(" ")))
+    }
+}
+
+fn has_any_cli_agent(config: &AppConfig) -> bool {
+    config.local_llm_mode == ProviderMode::Cli
+        || config.anthropic_mode == ProviderMode::Cli
+        || config.gemini_mode == ProviderMode::Cli
+        || config.openai_mode == ProviderMode::Cli
+}
+
+fn is_placeholder_verification_command(command: &str) -> bool {
+    command
+        .to_ascii_lowercase()
+        .contains("replace with actual verification commands")
 }
 
 fn reset_status_to_cycle_zero(status: &mut StatusFile) {
@@ -1470,20 +1575,29 @@ async fn process_exists(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_cycle_diff_summary, clear_writer_lock_if_matches, detect_limit_reached_cli_agent,
-        disabled_paid_agents_for_budget, has_paid_agent_available, is_empty_stdout_error,
-        lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
+        build_cycle_diff_summary, clear_writer_lock_if_matches, collect_preflight_issues,
+        detect_limit_reached_cli_agent, disabled_paid_agents_for_budget, fatal_preflight_reason,
+        has_paid_agent_available, has_any_cli_agent, is_empty_stdout_error,
+        is_placeholder_verification_command, lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
         parse_spec_bootstrap_response, parse_task_breakdown_response, parse_verify_status_counts,
         process_exists, reset_status_to_cycle_zero, resolve_runtime_config,
-        release_writer_lock_for_pid, resolve_bootstrap_request, SpecBootstrapMode,
+        release_writer_lock_for_pid, resolve_bootstrap_request, PreflightSeverity,
+        SpecBootstrapMode, execute,
     };
     use crate::agent::AgentKind;
+    use crate::cli::init;
     use crate::config::AppConfig;
-    use crate::core::{agent_workspace, status::StatusFile};
-    use crate::core::task::TaskStore;
-    use crate::machine_config::MachineConfig;
+    use crate::core::{agent_workspace, status::{StatusFile, VerifyStatus}};
+    use crate::core::task::{TaskEntry, TaskFrontmatter, TaskState, TaskStore};
+    use crate::machine_config::{MachineConfig, ProviderMode};
     use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::process::Command as StdCommand;
+    use std::sync::OnceLock;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    static TEST_WORKSPACE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn sample_status_with_writer(writer: &str) -> String {
         format!(
@@ -1704,6 +1818,58 @@ mod tests {
     }
 
     #[test]
+    fn detects_placeholder_verification_command() {
+        assert!(is_placeholder_verification_command(
+            "echo \"replace with actual verification commands\""
+        ));
+        assert!(!is_placeholder_verification_command("cargo test --lib"));
+    }
+
+    #[test]
+    fn has_any_cli_agent_detects_local_llm_cli() {
+        let mut config = AppConfig::from_env();
+        config.local_llm_mode = ProviderMode::Cli;
+        assert!(has_any_cli_agent(&config));
+    }
+
+    #[test]
+    fn collect_preflight_issues_fails_without_cli_and_real_verification() {
+        let config = AppConfig::from_env();
+        let mut machine = MachineConfig::default();
+        machine.execution.verification.commands =
+            vec!["echo \"replace with actual verification commands\"".into()];
+
+        let issues = collect_preflight_issues(&config, &machine);
+
+        assert!(issues.iter().any(|issue| {
+            issue.severity == PreflightSeverity::Fatal
+                && issue.message.contains("No CLI-backed agent")
+        }));
+        assert!(issues.iter().any(|issue| {
+            issue.severity == PreflightSeverity::Fatal
+                && issue.message.contains("template placeholder")
+        }));
+        assert!(issues.iter().any(|issue| {
+            issue.severity == PreflightSeverity::Warn
+                && issue.message.contains("mode: \"http\"")
+        }));
+        assert!(fatal_preflight_reason(&issues).is_some());
+    }
+
+    #[test]
+    fn collect_preflight_issues_is_clean_for_cli_with_real_verification() {
+        let mut config = AppConfig::from_env();
+        config.local_llm_mode = ProviderMode::Cli;
+        let mut machine = MachineConfig::default();
+        machine.execution.verification.commands = vec!["cargo check".into(), "cargo test --lib".into()];
+
+        let issues = collect_preflight_issues(&config, &machine);
+
+        assert!(issues.is_empty());
+        assert!(fatal_preflight_reason(&issues).is_none());
+    }
+
+    #[test]
     fn paid_agents_are_disabled_when_budget_is_exhausted() {
         let mut config = AppConfig::from_env();
         config.anthropic_api_key = Some("a".into());
@@ -1781,6 +1947,73 @@ mod tests {
         assert!(request.is_none());
     }
 
+    #[tokio::test]
+    async fn execute_completes_full_cycle_with_cli_agent() {
+        let _workspace_lock = test_workspace_lock().await;
+        let temp = TempDir::new().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(temp.path()).expect("cwd should switch");
+
+        let orch_dir = temp.path().join(".orcha");
+        init::execute(&orch_dir).await.expect("init should succeed");
+        initialize_git_repo(temp.path(), &["src/work.txt"]);
+        let script_path = write_fake_cli_script(temp.path()).expect("script should be written");
+
+        write_machine_config_for_fake_cli(&orch_dir, &script_path, temp.path(), "success");
+        seed_todo_task(&orch_dir, "T1", "Implement work item").await;
+
+        let config = AppConfig::from_orch_dir(&orch_dir).expect("config should load");
+        execute(&orch_dir, &config, true, None, false, false)
+            .await
+            .expect("run should complete");
+
+        let status = StatusFile::load(&agent_workspace::status_path(&orch_dir))
+            .await
+            .expect("status should load");
+        assert_eq!(status.frontmatter.verify_status, Some(VerifyStatus::Pass));
+
+        let task_store = TaskStore::new(&orch_dir);
+        let tasks = task_store.list_all().await.expect("tasks should load");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, TaskState::Done);
+
+        let work_content = std::fs::read_to_string(temp.path().join("src").join("work.txt"))
+            .expect("work file should exist");
+        assert!(work_content.contains("implemented"));
+
+        let status_log = std::fs::read_to_string(agent_workspace::status_log_path(&orch_dir))
+            .expect("status log should exist");
+        assert!(status_log.contains("Goal achieved"));
+    }
+
+    #[tokio::test]
+    async fn execute_stops_when_impl_does_not_change_repository() {
+        let _workspace_lock = test_workspace_lock().await;
+        let temp = TempDir::new().expect("temp dir should be created");
+        let _cwd = CurrentDirGuard::change_to(temp.path()).expect("cwd should switch");
+
+        let orch_dir = temp.path().join(".orcha");
+        init::execute(&orch_dir).await.expect("init should succeed");
+        initialize_git_repo(temp.path(), &["src/work.txt"]);
+        let script_path = write_fake_cli_script(temp.path()).expect("script should be written");
+
+        write_machine_config_for_fake_cli(&orch_dir, &script_path, temp.path(), "nochange");
+        seed_todo_task(&orch_dir, "T1", "Implement work item").await;
+
+        let config = AppConfig::from_orch_dir(&orch_dir).expect("config should load");
+        let err = execute(&orch_dir, &config, true, None, false, false)
+            .await
+            .expect_err("run should stop");
+
+        let err_text = err.to_string();
+        assert!(err_text.contains("could not be completed automatically"));
+        assert!(err_text.contains("CLI mode"));
+
+        let task_store = TaskStore::new(&orch_dir);
+        let tasks = task_store.list_all().await.expect("tasks should load");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, TaskState::Blocked);
+    }
+
     #[test]
     fn parse_task_breakdown_response_falls_back_to_criteria() {
         let tasks = parse_task_breakdown_response("no table here", &["criterion a".to_string()])
@@ -1828,5 +2061,162 @@ mod tests {
         assert_eq!(parsed.tasks.len(), 2);
         assert_eq!(parsed.tasks[0].id, "T1");
         assert_eq!(parsed.tasks[1].id, "T2");
+    }
+
+    async fn test_workspace_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        TEST_WORKSPACE_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .await
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &Path) -> anyhow::Result<Self> {
+            let original = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    fn powershell_command() -> &'static str {
+        #[cfg(windows)]
+        {
+            "powershell"
+        }
+        #[cfg(not(windows))]
+        {
+            "pwsh"
+        }
+    }
+
+    fn write_fake_cli_script(workspace_root: &Path) -> anyhow::Result<PathBuf> {
+        let script_path = workspace_root.join("fake-agent.ps1");
+        let script = r#"
+param(
+    [string]$WorkspaceRoot,
+    [string]$Mode
+)
+
+$prompt = [Console]::In.ReadToEnd()
+
+if ($prompt -like '*Prepare a briefing for cycle*') {
+    Write-Output 'Briefing ready.'
+    exit 0
+}
+
+    if ($prompt -like '*Implement the following task:*') {
+    if ($Mode -eq 'success') {
+        Add-Content -Path (Join-Path $WorkspaceRoot 'src/work.txt') -Value 'implemented'
+        Write-Output "Summary`nFiles modified:`n- src/work.txt`nEvidence: updated src/work.txt"
+        exit 0
+    }
+
+    if ($Mode -eq 'nochange') {
+        Write-Output "Summary`nNo code changes applied."
+        exit 0
+    }
+}
+
+if ($prompt -like '*Review the recent implementation changes.*') {
+    Write-Output "Findings: Low`nMust-fix:`n- (none)`n`npaid_review_required: no`nreason: clean"
+    exit 0
+}
+
+Write-Output 'Acknowledged.'
+"#;
+        std::fs::write(&script_path, script)?;
+        Ok(script_path)
+    }
+
+    fn write_machine_config_for_fake_cli(
+        orch_dir: &Path,
+        script_path: &Path,
+        workspace_root: &Path,
+        mode: &str,
+    ) {
+        let mut machine = MachineConfig::default();
+        machine.agents.local_llm.mode = ProviderMode::Cli;
+        machine.agents.local_llm.model = None;
+        machine.agents.local_llm.cli.command = powershell_command().to_string();
+        machine.agents.local_llm.cli.args = vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script_path.display().to_string(),
+            workspace_root.display().to_string(),
+            mode.to_string(),
+        ];
+        machine.agents.local_llm.cli.prompt_via_stdin = true;
+        machine.agents.local_llm.cli.model_arg = None;
+        machine.agents.local_llm.cli.ensure_no_permission_flags = false;
+        machine.agents.local_llm.cli.timeout_seconds = 60;
+        machine.execution.profile = Some(crate::machine_config::ProfileRef::new("local_only"));
+        machine.execution.acceptance_criteria = vec!["Implement work item".to_string()];
+        machine.execution.verification.commands = vec![format!(
+            "{} -NoProfile -ExecutionPolicy Bypass -Command \"if ((Get-Content 'src/work.txt') -match 'implemented') {{ exit 0 }} else {{ exit 1 }}\"",
+            powershell_command()
+        )];
+
+        let yml = serde_yaml::to_string(&machine).expect("machine config should serialize");
+        std::fs::write(MachineConfig::path(orch_dir), yml).expect("machine config should be written");
+    }
+
+    async fn seed_todo_task(orch_dir: &Path, id: &str, title: &str) {
+        let task_store = TaskStore::new(orch_dir);
+        task_store.ensure_dirs().await.expect("task dirs should exist");
+        let entry = TaskEntry {
+            frontmatter: TaskFrontmatter {
+                id: id.to_string(),
+                title: title.to_string(),
+                owner: "implementer".to_string(),
+                created: chrono::Utc::now().to_rfc3339(),
+            },
+            content: format!(
+                "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\nseeded by test\n",
+                title
+            ),
+            state: TaskState::Todo,
+            file_name: TaskEntry::generate_file_name(id, title),
+        };
+        task_store.create_task(&entry).await.expect("task should be created");
+    }
+
+    fn initialize_git_repo(workspace_root: &Path, tracked_files: &[&str]) {
+        for file in tracked_files {
+            let path = workspace_root.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("tracked file parent should exist");
+            }
+            std::fs::write(path, "baseline\n").expect("tracked file should be written");
+        }
+
+        run_git(workspace_root, &["init"]);
+        run_git(workspace_root, &["config", "user.email", "test@example.com"]);
+        run_git(workspace_root, &["config", "user.name", "orcha-test"]);
+
+        let mut add_args = vec!["add"];
+        add_args.extend(tracked_files.iter().copied());
+        run_git(workspace_root, &add_args);
+        run_git(workspace_root, &["commit", "-m", "baseline"]);
+    }
+
+    fn run_git(workspace_root: &Path, args: &[&str]) {
+        let status = StdCommand::new("git")
+            .args(args)
+            .current_dir(workspace_root)
+            .status()
+            .expect("git should run");
+        assert!(status.success(), "git {:?} should succeed", args);
     }
 }
