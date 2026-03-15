@@ -15,7 +15,7 @@ use crate::core::error::OrchaError;
 use crate::core::handoff;
 use crate::core::profile;
 use crate::core::agent_workspace;
-use crate::core::status::StatusFile;
+use crate::core::status::{StatusFile, VerifyStatus};
 use crate::core::status_log;
 use crate::core::task::{Task, TaskState, TaskStore, TaskEntry, TaskFrontmatter, parse_task_table};
 use crate::core::structured_log;
@@ -296,7 +296,7 @@ pub async fn execute(
                 .await;
 
                 if phase == Phase::Verify {
-                    let verify_failed = status.content.contains("Overall: FAIL");
+                    let verify_failed = status.frontmatter.verify_status == Some(VerifyStatus::Fail);
                     if verify_failed {
                         consecutive_verify_failures = consecutive_verify_failures.saturating_add(1);
                         let detail = format!(
