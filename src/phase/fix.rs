@@ -88,8 +88,9 @@ pub async fn execute(
     let resolved = response.content.contains("Resolved: yes");
     let diff_after = changed_files_snapshot().await;
     let repo_changed = diff_before != diff_after;
+    let reported_file_changes = response_reports_file_changes(&response.content);
 
-    if !resolved || !repo_changed {
+    if !resolved || !repo_changed || !reported_file_changes {
         status.frontmatter.review_status = ReviewStatus::IssuesFound;
         status_log::append(
             &log_path,
@@ -145,4 +146,38 @@ async fn changed_files_snapshot() -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+fn response_reports_file_changes(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    if !(lower.contains("files modified")
+        || lower.contains("files changed")
+        || lower.contains("files created")
+        || lower.contains("changed files"))
+    {
+        return false;
+    }
+
+    response.lines().any(|line| {
+        let trimmed = line.trim();
+        (trimmed.starts_with('-') || trimmed.starts_with('*') || trimmed.starts_with("1."))
+            && (trimmed.contains('/') || trimmed.contains('\\') || trimmed.ends_with(".rs") || trimmed.ends_with(".md"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_reports_file_changes;
+
+    #[test]
+    fn fix_response_reports_file_changes_when_paths_are_listed() {
+        let response = "Resolved: yes\nFiles changed:\n- src/lib.rs\n- src/main.rs";
+        assert!(response_reports_file_changes(response));
+    }
+
+    #[test]
+    fn fix_response_without_file_report_is_rejected() {
+        let response = "Resolved: yes\nApplied the fix.";
+        assert!(!response_reports_file_changes(response));
+    }
 }

@@ -123,6 +123,7 @@ pub async fn execute(
 
     let diff_after = changed_files_snapshot().await;
     let repo_changed = diff_after != diff_before;
+    let reported_file_changes = response_reports_file_changes(&response.content);
 
     // Append evidence to the task content before deciding final state.
     let evidence_section = format!(
@@ -131,7 +132,7 @@ pub async fn execute(
         response.content.trim()
     );
     update_section(&mut task_entry.content, "Evidence", &evidence_section);
-    if repo_changed {
+    if repo_changed && reported_file_changes {
         task_store
             .move_task(&file_name, TaskState::Doing, TaskState::Done)
             .await?;
@@ -169,7 +170,7 @@ pub async fn execute(
     update_section(
         &mut task_entry.content,
         "Notes",
-        "Implementation response did not produce repository changes. Human follow-up required.",
+        "Implementation did not provide both repository changes and an explicit changed-files report. Human follow-up required.",
     );
     task_store.update_task(&task_entry).await?;
     status.frontmatter.locks.active_task = None;
@@ -180,14 +181,14 @@ pub async fn execute(
         "implementer",
         &response.model_used,
         &format!(
-            "Blocked task {}: implementation response did not change repository state",
+            "Blocked task {}: implementation response did not satisfy completion evidence requirements",
             task_id
         ),
     )
     .await?;
 
     Ok(CycleDecision::Escalate(format!(
-        "Implementation did not produce repository changes for task {}",
+        "Implementation did not provide sufficient completion evidence for task {}",
         task_id
     )))
 }
@@ -229,4 +230,38 @@ async fn changed_files_snapshot() -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+fn response_reports_file_changes(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    if !(lower.contains("files modified")
+        || lower.contains("files changed")
+        || lower.contains("files created")
+        || lower.contains("changed files"))
+    {
+        return false;
+    }
+
+    response.lines().any(|line| {
+        let trimmed = line.trim();
+        (trimmed.starts_with('-') || trimmed.starts_with('*') || trimmed.starts_with("1."))
+            && (trimmed.contains('/') || trimmed.contains('\\') || trimmed.ends_with(".rs") || trimmed.ends_with(".md"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_reports_file_changes;
+
+    #[test]
+    fn response_reports_file_changes_when_section_lists_paths() {
+        let response = "Summary\nFiles modified:\n- src/lib.rs\n- README.md\nEvidence";
+        assert!(response_reports_file_changes(response));
+    }
+
+    #[test]
+    fn response_reports_file_changes_requires_explicit_section_and_path() {
+        let response = "Summary\nUpdated implementation and tests passed.";
+        assert!(!response_reports_file_changes(response));
+    }
 }

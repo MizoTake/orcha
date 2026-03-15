@@ -82,21 +82,14 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     println!("  Activity: {}", format_activity(age_seconds));
     println!("  Health:  {}", format_health(health));
     println!(
-        "  Budget:  {}/{}",
-        status.frontmatter.budget.paid_calls_used, status.frontmatter.budget.paid_calls_limit
+        "  Budget:  {}",
+        format_budget(&status)
     );
     if !status.frontmatter.disabled_agents.is_empty() {
-        let disabled = status
-            .frontmatter
-            .disabled_agents
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("  Disabled agents: {}", disabled);
+        println!("  Disabled agents: {}", format_disabled_agents(&status));
     }
     if let Some(verify_status) = &status.frontmatter.verify_status {
-        println!("  Verify: {}", format!("{verify_status:?}").to_lowercase());
+        println!("  Verify: {}", format_verify_status(verify_status));
     }
     if status.frontmatter.review_status == ReviewStatus::IssuesFound {
         println!("  Review: must-fix remaining");
@@ -154,6 +147,27 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn format_budget(status: &StatusFile) -> String {
+    format!(
+        "{}/{}",
+        status.frontmatter.budget.paid_calls_used, status.frontmatter.budget.paid_calls_limit
+    )
+}
+
+fn format_disabled_agents(status: &StatusFile) -> String {
+    status
+        .frontmatter
+        .disabled_agents
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_verify_status(status: &VerifyStatus) -> String {
+    format!("{status:?}").to_lowercase()
+}
+
 fn format_health(health: Health) -> String {
     match health {
         Health::Green => "green".green().bold().to_string(),
@@ -183,5 +197,51 @@ fn format_activity(age_seconds: Option<i64>) -> String {
         Some(seconds) if seconds <= 900 => "slow".yellow().bold().to_string(),
         Some(_) => "stale".red().bold().to_string(),
         None => "unknown".white().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_budget, format_disabled_agents, format_verify_status};
+    use crate::agent::AgentKind;
+    use crate::core::cycle::Phase;
+    use crate::core::profile::ProfileName;
+    use crate::core::status::{Budget, Locks, ReviewStatus, StatusFile, StatusFrontmatter, VerifyStatus};
+
+    fn sample_status() -> StatusFile {
+        StatusFile {
+            frontmatter: StatusFrontmatter {
+                run_id: "run-1".into(),
+                profile: ProfileName::CheapCheckpoints,
+                cycle: 2,
+                phase: Phase::Review,
+                last_update: "2026-01-01T00:00:00Z".into(),
+                budget: Budget {
+                    paid_calls_used: 1,
+                    paid_calls_limit: 3,
+                },
+                locks: Locks {
+                    writer: None,
+                    active_task: None,
+                },
+                review_status: ReviewStatus::Clean,
+                verify_status: Some(VerifyStatus::Fail),
+                consecutive_verify_failures: 2,
+                disabled_agents: vec![AgentKind::Claude, AgentKind::Codex],
+            },
+            content: String::new(),
+        }
+    }
+
+    #[test]
+    fn budget_and_disabled_agents_are_formatted_for_output() {
+        let status = sample_status();
+        assert_eq!(format_budget(&status), "1/3");
+        assert_eq!(format_disabled_agents(&status), "claude, codex");
+    }
+
+    #[test]
+    fn verify_status_is_lowercase_for_output() {
+        assert_eq!(format_verify_status(&VerifyStatus::Fail), "fail");
     }
 }

@@ -116,20 +116,11 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     println!();
     println!(
         "  Review status:     {}",
-        if status.frontmatter.review_status == ReviewStatus::IssuesFound {
-            "issues_found"
-        } else {
-            "clean"
-        }
+        format_review_status(&status)
     );
     println!(
         "  Verify status:     {}",
-        status
-            .frontmatter
-            .verify_status
-            .as_ref()
-            .map(|state| format!("{state:?}").to_lowercase())
-            .unwrap_or_else(|| "unknown".to_string())
+        format_verify_status(&status)
     );
     println!();
 
@@ -167,16 +158,7 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
         }
     );
     if !status.frontmatter.disabled_agents.is_empty() {
-        println!(
-            "  disabled:  {}",
-            status
-                .frontmatter
-                .disabled_agents
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("  disabled:  {}", format_disabled_agents(&status));
     }
     println!();
 
@@ -204,6 +186,33 @@ pub async fn execute(orch_dir: &Path, config: &AppConfig) -> anyhow::Result<()> 
     );
 
     Ok(())
+}
+
+fn format_review_status(status: &StatusFile) -> &'static str {
+    if status.frontmatter.review_status == ReviewStatus::IssuesFound {
+        "issues_found"
+    } else {
+        "clean"
+    }
+}
+
+fn format_verify_status(status: &StatusFile) -> String {
+    status
+        .frontmatter
+        .verify_status
+        .as_ref()
+        .map(|state| format!("{state:?}").to_lowercase())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_disabled_agents(status: &StatusFile) -> String {
+    status
+        .frontmatter
+        .disabled_agents
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn git_diff() -> Option<String> {
@@ -241,4 +250,46 @@ async fn git_changed_files() -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_disabled_agents, format_review_status, format_verify_status};
+    use crate::agent::AgentKind;
+    use crate::core::cycle::Phase;
+    use crate::core::profile::ProfileName;
+    use crate::core::status::{Budget, Locks, ReviewStatus, StatusFile, StatusFrontmatter, VerifyStatus};
+
+    fn sample_status() -> StatusFile {
+        StatusFile {
+            frontmatter: StatusFrontmatter {
+                run_id: "run-1".into(),
+                profile: ProfileName::CheapCheckpoints,
+                cycle: 1,
+                phase: Phase::Verify,
+                last_update: "2026-01-01T00:00:00Z".into(),
+                budget: Budget {
+                    paid_calls_used: 2,
+                    paid_calls_limit: 2,
+                },
+                locks: Locks {
+                    writer: None,
+                    active_task: None,
+                },
+                review_status: ReviewStatus::IssuesFound,
+                verify_status: Some(VerifyStatus::Skipped),
+                consecutive_verify_failures: 3,
+                disabled_agents: vec![AgentKind::Claude],
+            },
+            content: String::new(),
+        }
+    }
+
+    #[test]
+    fn explain_helpers_format_real_status_values() {
+        let status = sample_status();
+        assert_eq!(format_review_status(&status), "issues_found");
+        assert_eq!(format_verify_status(&status), "skipped");
+        assert_eq!(format_disabled_agents(&status), "claude");
+    }
 }
