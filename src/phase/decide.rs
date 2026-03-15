@@ -4,7 +4,7 @@ use crate::agent::router::AgentRouter;
 use crate::core::agent_workspace;
 use crate::core::cycle::{CycleDecision, StopReason};
 use crate::core::profile::ProfileName;
-use crate::core::status::StatusFile;
+use crate::core::status::{StatusFile, VerifyStatus};
 use crate::core::status_log;
 use crate::core::task::{TaskState, TaskStore};
 use crate::machine_config::MachineConfig;
@@ -26,7 +26,7 @@ pub async fn execute(
     let done_count = all_tasks.iter().filter(|t| t.state == TaskState::Done).count();
     let total = all_tasks.len();
     let all_done = total > 0 && done_count == total;
-    let verify_passed = status.content.contains("Overall: PASS");
+    let verify_passed = status.frontmatter.verify_status == Some(VerifyStatus::Pass);
 
     if completion_satisfied(all_done, verify_passed, done_count, criteria_count) {
         status_log::append(
@@ -43,7 +43,7 @@ pub async fn execute(
         return Ok(CycleDecision::Done);
     }
 
-    let verify_failed = status.content.contains("Overall: FAIL");
+    let verify_failed = status.frontmatter.verify_status == Some(VerifyStatus::Fail);
 
     // Check stop conditions
     let next_cycle = status.frontmatter.cycle + 1;

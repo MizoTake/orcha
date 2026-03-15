@@ -6,6 +6,13 @@ use crate::core::cycle::Phase;
 use crate::core::profile::ProfileName;
 use crate::markdown::frontmatter::{self, Document};
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyStatus {
+    Pass,
+    Fail,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusFrontmatter {
     pub run_id: String,
@@ -15,6 +22,8 @@ pub struct StatusFrontmatter {
     pub last_update: String,
     pub budget: Budget,
     pub locks: Locks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_status: Option<VerifyStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

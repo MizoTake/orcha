@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::agent::verifier;
 use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
-use crate::core::status::StatusFile;
+use crate::core::status::{StatusFile, VerifyStatus};
 use crate::core::status_log;
 use crate::machine_config::MachineConfig;
 
@@ -37,6 +37,13 @@ pub async fn execute(orch_dir: &Path, status: &mut StatusFile) -> anyhow::Result
         &format!("Verification: {}", result.summary),
     )
     .await?;
+
+    // Update frontmatter with canonical verify status
+    status.frontmatter.verify_status = Some(if result.passed {
+        VerifyStatus::Pass
+    } else {
+        VerifyStatus::Fail
+    });
 
     // Update latest notes with verification result
     let verify_note = format!(
