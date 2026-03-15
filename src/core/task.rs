@@ -12,17 +12,19 @@ use crate::markdown::frontmatter::{self, Document};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
-    Issue,
-    Wip,
+    Todo,
+    Doing,
     Done,
+    Blocked,
 }
 
 impl fmt::Display for TaskState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TaskState::Issue => write!(f, "issue"),
-            TaskState::Wip => write!(f, "wip"),
+            TaskState::Todo => write!(f, "todo"),
+            TaskState::Doing => write!(f, "doing"),
             TaskState::Done => write!(f, "done"),
+            TaskState::Blocked => write!(f, "blocked"),
         }
     }
 }
@@ -30,18 +32,20 @@ impl fmt::Display for TaskState {
 impl TaskState {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
-            "issue" => Some(TaskState::Issue),
-            "wip" => Some(TaskState::Wip),
+            "todo" | "issue" => Some(TaskState::Todo),
+            "doing" | "wip" => Some(TaskState::Doing),
             "done" => Some(TaskState::Done),
+            "blocked" => Some(TaskState::Blocked),
             _ => None,
         }
     }
 
     pub fn folder_name(&self) -> &str {
         match self {
-            TaskState::Issue => "issue",
-            TaskState::Wip => "wip",
+            TaskState::Todo => "todo",
+            TaskState::Doing => "doing",
             TaskState::Done => "done",
+            TaskState::Blocked => "blocked",
         }
     }
 
@@ -49,7 +53,21 @@ impl TaskState {
         Self::from_str(name)
     }
 
-    pub const ALL: [TaskState; 3] = [TaskState::Issue, TaskState::Wip, TaskState::Done];
+    pub const ALL: [TaskState; 4] = [
+        TaskState::Todo,
+        TaskState::Doing,
+        TaskState::Done,
+        TaskState::Blocked,
+    ];
+
+    pub fn legacy_folder_names(&self) -> &'static [&'static str] {
+        match self {
+            TaskState::Todo => &["todo", "issue"],
+            TaskState::Doing => &["doing", "wip"],
+            TaskState::Done => &["done"],
+            TaskState::Blocked => &["blocked"],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,19 +229,21 @@ impl TaskStore {
 
     /// List tasks in a specific state folder.
     pub async fn list_by_state(&self, state: TaskState) -> anyhow::Result<Vec<TaskEntry>> {
-        let dir = self.base_dir.join(state.folder_name());
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
         let mut entries = Vec::new();
-        let mut read_dir = tokio::fs::read_dir(&dir).await?;
-        while let Some(entry) = read_dir.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                match TaskEntry::load(&path, state).await {
-                    Ok(task_entry) => entries.push(task_entry),
-                    Err(e) => {
-                        tracing::warn!("Failed to load task file {:?}: {}", path, e);
+        for dir_name in state.legacy_folder_names() {
+            let dir = self.base_dir.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            let mut read_dir = tokio::fs::read_dir(&dir).await?;
+            while let Some(entry) = read_dir.next_entry().await? {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    match TaskEntry::load(&path, state).await {
+                        Ok(task_entry) => entries.push(task_entry),
+                        Err(e) => {
+                            tracing::warn!("Failed to load task file {:?}: {}", path, e);
+                        }
                     }
                 }
             }
@@ -232,9 +252,9 @@ impl TaskStore {
         Ok(entries)
     }
 
-    /// Get the next issue task (first by ID order).
+    /// Get the next todo task (first by ID order).
     pub async fn next_issue(&self) -> anyhow::Result<Option<TaskEntry>> {
-        let issues = self.list_by_state(TaskState::Issue).await?;
+        let issues = self.list_by_state(TaskState::Todo).await?;
         Ok(issues.into_iter().next())
     }
 
@@ -253,7 +273,7 @@ impl TaskStore {
         Ok(())
     }
 
-    /// Create a new task in the issue folder.
+    /// Create a new task in the canonical folder for its current state.
     pub async fn create_task(&self, entry: &TaskEntry) -> anyhow::Result<()> {
         entry.save(&self.base_dir).await
     }
@@ -311,7 +331,7 @@ fn natural_sort_id(a: &str, b: &str) -> std::cmp::Ordering {
 /// Expected format:
 /// | ID | Title | State | Owner | Evidence | Notes |
 /// |---|---|---|---|---|---|
-/// | T1 | Do something | issue | local_llm | | |
+/// | T1 | Do something | todo | local_llm | | |
 pub fn parse_task_table(markdown: &str) -> anyhow::Result<Vec<Task>> {
     let mut tasks = Vec::new();
     let lines: Vec<&str> = markdown.lines().collect();
@@ -400,13 +420,13 @@ mod tests {
 
     #[test]
     fn parse_basic_table() {
-        let table = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Setup DB | done | local_llm | tests pass | |\n| T2 | Add auth | wip | local_llm | | WIP |\n";
+        let table = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Setup DB | done | local_llm | tests pass | |\n| T2 | Add auth | doing | local_llm | | WIP |\n";
         let tasks = parse_task_table(table).unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "T1");
         assert_eq!(tasks[0].state, TaskState::Done);
         assert_eq!(tasks[1].id, "T2");
-        assert_eq!(tasks[1].state, TaskState::Wip);
+        assert_eq!(tasks[1].state, TaskState::Doing);
         assert_eq!(tasks[1].notes, "WIP");
     }
 
@@ -415,7 +435,7 @@ mod tests {
         let tasks = vec![Task {
             id: "T1".into(),
             title: "Setup".into(),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             owner: "local_llm".into(),
             evidence: "".into(),
             notes: "".into(),
@@ -424,14 +444,15 @@ mod tests {
         let parsed = parse_task_table(&rendered).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].id, "T1");
-        assert_eq!(parsed[0].state, TaskState::Issue);
+        assert_eq!(parsed[0].state, TaskState::Todo);
     }
 
     #[test]
     fn task_state_folder_names() {
-        assert_eq!(TaskState::Issue.folder_name(), "issue");
-        assert_eq!(TaskState::Wip.folder_name(), "wip");
+        assert_eq!(TaskState::Todo.folder_name(), "todo");
+        assert_eq!(TaskState::Doing.folder_name(), "doing");
         assert_eq!(TaskState::Done.folder_name(), "done");
+        assert_eq!(TaskState::Blocked.folder_name(), "blocked");
     }
 
     #[test]
@@ -476,7 +497,7 @@ mod tests {
                 created: "2026-01-01T00:00:00Z".into(),
             },
             content: "## Description\nDo something\n".into(),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name: "T1-test-task.md".into(),
         };
         store.create_task(&entry).await.unwrap();
@@ -484,7 +505,7 @@ mod tests {
         let all = store.list_all().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].frontmatter.id, "T1");
-        assert_eq!(all[0].state, TaskState::Issue);
+        assert_eq!(all[0].state, TaskState::Todo);
     }
 
     #[tokio::test]
@@ -501,18 +522,18 @@ mod tests {
                 created: String::new(),
             },
             content: String::new(),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name: "T1-test.md".into(),
         };
         store.create_task(&entry).await.unwrap();
 
         store
-            .move_task("T1-test.md", TaskState::Issue, TaskState::Wip)
+            .move_task("T1-test.md", TaskState::Todo, TaskState::Doing)
             .await
             .unwrap();
 
-        let issues = store.list_by_state(TaskState::Issue).await.unwrap();
-        let wips = store.list_by_state(TaskState::Wip).await.unwrap();
+        let issues = store.list_by_state(TaskState::Todo).await.unwrap();
+        let wips = store.list_by_state(TaskState::Doing).await.unwrap();
         assert!(issues.is_empty());
         assert_eq!(wips.len(), 1);
         assert_eq!(wips[0].frontmatter.id, "T1");
@@ -534,11 +555,19 @@ mod tests {
                 created: String::new(),
             },
             content: String::new(),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name: "T3-third.md".into(),
         };
         store.create_task(&entry).await.unwrap();
 
         assert_eq!(store.next_id().await.unwrap(), "T4");
+    }
+
+    #[test]
+    fn legacy_state_names_still_parse() {
+        assert_eq!(TaskState::from_str("issue"), Some(TaskState::Todo));
+        assert_eq!(TaskState::from_str("wip"), Some(TaskState::Doing));
+        assert_eq!(TaskState::from_folder_name("issue"), Some(TaskState::Todo));
+        assert_eq!(TaskState::from_folder_name("wip"), Some(TaskState::Doing));
     }
 }

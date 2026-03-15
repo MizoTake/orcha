@@ -78,7 +78,7 @@ pub async fn execute(
              Return an updated task table in this exact format:\n\
              | ID | Title | State | Owner | Evidence | Notes |\n\
              |---|---|---|---|---|---|\n\
-             | T1 | Task title | issue | agent_name | | description |\n\n\
+             | T1 | Task title | todo | agent_name | | description |\n\n\
              Also provide a brief plan rationale after the table.",
             status.frontmatter.cycle
         ),
@@ -128,7 +128,7 @@ pub async fn execute(
     Ok(CycleDecision::NextPhase)
 }
 
-/// Create task files in the issue folder from parsed Task structs.
+/// Create task files in the todo folder from parsed Task structs.
 async fn create_task_files(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Result<()> {
     for task in tasks {
         let file_name = TaskEntry::generate_file_name(&task.id, &task.title);
@@ -143,7 +143,7 @@ async fn create_task_files(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Re
                 "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
                 task.title, task.notes
             ),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             file_name,
         };
         task_store.create_task(&entry).await?;
@@ -158,7 +158,7 @@ fn tasks_from_acceptance_criteria(criteria: &[String]) -> Vec<Task> {
         .map(|(idx, c)| Task {
             id: format!("T{}", idx + 1),
             title: sanitize_table_cell(c),
-            state: TaskState::Issue,
+            state: TaskState::Todo,
             owner: String::new(),
             evidence: String::new(),
             notes: "Derived from orcha.yml execution.acceptance_criteria".to_string(),
@@ -186,9 +186,9 @@ mod tests {
         let tasks = tasks_from_acceptance_criteria(&criteria);
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].id, "T1");
-        assert_eq!(tasks[0].state, TaskState::Issue);
+        assert_eq!(tasks[0].state, TaskState::Todo);
         assert_eq!(tasks[1].id, "T2");
-        assert_eq!(tasks[1].state, TaskState::Issue);
+        assert_eq!(tasks[1].state, TaskState::Todo);
     }
 
     #[test]

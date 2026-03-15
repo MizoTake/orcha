@@ -123,6 +123,9 @@ budget:
 locks:
   writer: null
   active_task: null
+review_status: clean
+consecutive_verify_failures: 0
+disabled_agents: []
 ---
 
 ## Goal
@@ -184,7 +187,7 @@ Return an updated task table in markdown format:
 ```
 | ID | Title | State | Owner | Evidence | Notes |
 |---|---|---|---|---|---|
-| T1 | Task title | issue | agent | | description |
+| T1 | Task title | todo | agent | | description |
 ```
 
 Also provide a brief summary of the plan rationale.

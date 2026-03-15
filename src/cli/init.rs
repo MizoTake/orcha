@@ -21,9 +21,10 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
         orch_dir.join("profiles"),
         orch_dir.join("handoff"),
         orch_dir.join("agentworkspace"),
-        orch_dir.join("tasks").join("issue"),
-        orch_dir.join("tasks").join("wip"),
+        orch_dir.join("tasks").join("todo"),
+        orch_dir.join("tasks").join("doing"),
         orch_dir.join("tasks").join("done"),
+        orch_dir.join("tasks").join("blocked"),
     ];
     for dir in &dirs {
         tokio::fs::create_dir_all(dir).await?;
