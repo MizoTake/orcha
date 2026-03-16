@@ -259,13 +259,26 @@ impl TaskStore {
     }
 
     /// Move a task file from one state folder to another.
+    /// Searches legacy folder names (e.g. `wip`, `issue`) so existing task
+    /// directories created before the rename are handled transparently.
     pub async fn move_task(
         &self,
         file_name: &str,
         from: TaskState,
         to: TaskState,
     ) -> anyhow::Result<()> {
-        let src = self.base_dir.join(from.folder_name()).join(file_name);
+        let src = from
+            .legacy_folder_names()
+            .iter()
+            .map(|dir| self.base_dir.join(dir).join(file_name))
+            .find(|p| p.exists())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Task file '{}' not found in any '{}' folder",
+                    file_name,
+                    from
+                )
+            })?;
         let dst_dir = self.base_dir.join(to.folder_name());
         tokio::fs::create_dir_all(&dst_dir).await?;
         let dst = dst_dir.join(file_name);
