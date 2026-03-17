@@ -132,7 +132,10 @@ pub async fn execute(
         response.content.trim()
     );
     update_section(&mut task_entry.content, "Evidence", &evidence_section);
-    if repo_changed && reported_file_changes {
+    // Repository changes are the ground-truth evidence of completion.
+    // A matching changed-files report in the response is a useful signal but
+    // is not required when git already confirms that files were modified.
+    if repo_changed {
         task_store
             .move_task(&file_name, TaskState::Doing, TaskState::Done)
             .await?;
@@ -141,14 +144,16 @@ pub async fn execute(
         task_store.update_task(&task_entry).await?;
         status.frontmatter.locks.active_task = None;
 
-        status_log::append(
-            &log_path,
-            "impl",
-            "implementer",
-            &response.model_used,
-            &format!("Completed task {}: {}", task_id, task_title),
-        )
-        .await?;
+        let note = if reported_file_changes {
+            format!("Completed task {}: {}", task_id, task_title)
+        } else {
+            format!(
+                "Completed task {} (git evidence; response omitted changed-files report): {}",
+                task_id, task_title
+            )
+        };
+        status_log::append(&log_path, "impl", "implementer", &response.model_used, &note)
+            .await?;
 
         // Write the implementation response to outbox for external tools
         let outbox_path = workspace_md::resolve_handoff_file(orch_dir, "outbox")?;
