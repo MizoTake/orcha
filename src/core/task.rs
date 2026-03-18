@@ -242,7 +242,7 @@ impl TaskStore {
                     match TaskEntry::load(&path, state).await {
                         Ok(task_entry) => entries.push(task_entry),
                         Err(e) => {
-                            tracing::warn!("Failed to load task file {:?}: {}", path, e);
+                            tracing::debug!("Skipping non-task file {:?}: {}", path, e);
                         }
                     }
                 }

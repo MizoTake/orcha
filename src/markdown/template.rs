@@ -138,26 +138,26 @@ pub fn role_planner_md() -> &'static str {
 
 ## Mission
 
-Analyze the task files and current status to review the task plan. Identify remaining work and ensure tasks are actionable.
+Review the open tasks and produce an implementation strategy for this cycle.
+Identify dependencies, risks, and recommended execution order.
 
-## Checklist
+## Task Locations
 
-- [ ] Read task files from .orcha/tasks/todo/ and understand acceptance criteria
-- [ ] Review current status and completed tasks
-- [ ] Identify remaining work
-- [ ] Assign priorities and owners
+- Open (ready to implement): `.orcha/tasks/open/`
+- In progress: `.orcha/tasks/in-progress/`
+- Done: `.orcha/tasks/done/`
+- Blocked: `.orcha/tasks/blocked/`
+
+## Task States
+
+Use these state names exactly: `open`, `in-progress`, `done`, `blocked`
 
 ## Output Format
 
-Return an updated task table in markdown format:
-
-```
-| ID | Title | State | Owner | Evidence | Notes |
-|---|---|---|---|---|---|
-| T1 | Task title | todo | agent | | description |
-```
-
-Also provide a brief summary of the plan rationale.
+1. **Recommended order** — which task to tackle first and why
+2. **Dependencies** — ordering constraints between tasks
+3. **Risks** — potential blockers or unknowns
+4. **Approach notes** — brief implementation guidance per task
 "#
 }
 
@@ -168,9 +168,15 @@ pub fn role_implementer_md() -> &'static str {
 
 Execute the assigned task by writing or modifying code. Follow the task description and constraints.
 
+## Task Location
+
+The current task file is provided directly in your context.
+Do NOT look for `goal.md` or `tasks/todo/` — they do not exist.
+Task files are in `.orcha/tasks/open/` (ready) or `.orcha/tasks/in-progress/` (active).
+
 ## Checklist
 
-- [ ] Read the task description and acceptance criteria
+- [ ] Read the task description from the provided task file
 - [ ] Understand the existing codebase context
 - [ ] Implement the changes
 - [ ] Ensure changes are minimal and focused
@@ -180,7 +186,7 @@ Execute the assigned task by writing or modifying code. Follow the task descript
 
 Return:
 1. Summary of changes made
-2. Files modified/created
+2. Files modified/created (list each file path)
 3. Any issues encountered
 4. Evidence of completion (test output, etc.)
 "#
@@ -251,7 +257,7 @@ Prepare briefing context for the current cycle. Summarize the current state, rec
 
 ## Checklist
 
-- [ ] Read task files from .orcha/tasks/
+- [ ] Read task files from .orcha/tasks/open/ and .orcha/tasks/in-progress/
 - [ ] Read status.md
 - [ ] Read recent status_log entries
 - [ ] Check inbox for external messages
