@@ -11,7 +11,7 @@ use crate::core::task::TaskStore;
 use crate::core::workspace_md;
 
 /// Phase 1: Briefing
-/// Read goal, status, tasks, inbox and prepare context summary for the cycle.
+/// Read task files, status, inbox and prepare context summary for the cycle.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
@@ -21,7 +21,6 @@ pub async fn execute(
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
     // Load context files
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role_path = workspace_md::resolve_role_file(orch_dir, "scribe")?;
     let role_name = role_path
         .file_name()
@@ -36,10 +35,6 @@ pub async fn execute(
 
     let context = AgentContext {
         context_files: vec![
-            ContextFile {
-                name: "goal.md".into(),
-                content: goal,
-            },
             ContextFile {
                 name: "status.md".into(),
                 content: format!(
@@ -108,21 +103,27 @@ pub async fn execute(
     Ok(CycleDecision::NextPhase)
 }
 
-fn truncate_content(s: &str, max: usize) -> &str {
+fn truncate_content(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+        return s.to_string();
     }
+    let boundary = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max)
+        .last()
+        .unwrap_or(0);
+    format!("{}... (truncated)", &s[..boundary])
 }
 
 fn update_latest_notes(content: &mut String, note: &str) {
     if let Some(pos) = content.find("## Latest Notes") {
         // Find the end of this section (next ## or end)
-        let after = &content[pos + 16..];
+        let after_start = (pos + "## Latest Notes".len()).min(content.len());
+        let after = &content[after_start..];
         let section_end = after
             .find("\n## ")
-            .map(|p| pos + 16 + p)
+            .map(|p| after_start + p)
             .unwrap_or(content.len());
         *content = format!(
             "{}\n## Latest Notes\n\n{}\n{}",
@@ -130,5 +131,41 @@ fn update_latest_notes(content: &mut String, note: &str) {
             note,
             &content[section_end..]
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_content, update_latest_notes};
+
+    #[test]
+    fn truncate_content_returns_original_when_within_limit() {
+        assert_eq!(truncate_content("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_content_truncates_at_char_boundary() {
+        // "テスト" is 9 bytes; slicing at byte 5 would be mid-char
+        let s = "テスト合格";
+        let result = truncate_content(s, 5);
+        assert!(result.ends_with("... (truncated)"));
+        let prefix = result.trim_end_matches("... (truncated)");
+        assert!(s.starts_with(prefix));
+    }
+
+    #[test]
+    fn update_latest_notes_replaces_section() {
+        let mut content = "## Latest Notes\n\nOld note.\n".to_string();
+        update_latest_notes(&mut content, "New note.");
+        assert!(content.contains("New note."));
+        assert!(!content.contains("Old note."));
+    }
+
+    #[test]
+    fn update_latest_notes_handles_no_trailing_newline() {
+        // Must not panic when "## Latest Notes" appears at end with no trailing \n
+        let mut content = "## Latest Notes".to_string();
+        update_latest_notes(&mut content, "Note.");
+        assert!(content.contains("Note."));
     }
 }

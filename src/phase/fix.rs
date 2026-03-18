@@ -18,10 +18,9 @@ pub async fn execute(
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
-    // Check if there are must-fix items in the latest notes
-    let has_fixes_needed = status.content.contains("Must-fix:")
-        && !status.content.contains("Must-fix:\n- (none)")
-        && !status.content.contains("Must-fix:\nNone");
+    // Review phase files must-fix items as issues rather than delegating to fix phase.
+    // Fix phase only acts when ReviewStatus::IssuesFound is explicitly set.
+    let has_fixes_needed = status.frontmatter.review_status == ReviewStatus::IssuesFound;
 
     if !has_fixes_needed {
         status_log::append(
@@ -35,7 +34,6 @@ pub async fn execute(
         return Ok(CycleDecision::NextPhase);
     }
 
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role_path = workspace_md::resolve_role_file(orch_dir, "implementer")?;
     let role_name = role_path
         .file_name()
@@ -46,10 +44,6 @@ pub async fn execute(
 
     let context = AgentContext {
         context_files: vec![
-            ContextFile {
-                name: "goal.md".into(),
-                content: goal,
-            },
             ContextFile {
                 name: "status.md".into(),
                 content: status.content.clone(),

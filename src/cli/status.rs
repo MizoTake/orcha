@@ -114,8 +114,8 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
 
         for t in &tasks {
             let state_color = match t.state {
-                TaskState::Todo => Color::White,
-                TaskState::Doing => Color::Yellow,
+                TaskState::Open => Color::White,
+                TaskState::InProgress => Color::Yellow,
                 TaskState::Done => Color::Green,
                 TaskState::Blocked => Color::Red,
             };
@@ -132,15 +132,15 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     // Summary counts
     let total = tasks.len();
     let done = tasks.iter().filter(|t| t.state == TaskState::Done).count();
-    let doing = tasks.iter().filter(|t| t.state == TaskState::Doing).count();
-    let todo = tasks.iter().filter(|t| t.state == TaskState::Todo).count();
+    let in_progress = tasks.iter().filter(|t| t.state == TaskState::InProgress).count();
+    let open = tasks.iter().filter(|t| t.state == TaskState::Open).count();
     let blocked = tasks.iter().filter(|t| t.state == TaskState::Blocked).count();
 
     if total > 0 {
         println!();
         println!(
-            "  Progress: {}/{} done, {} doing, {} todo, {} blocked",
-            done, total, doing, todo, blocked
+            "  Progress: {}/{} done, {} in-progress, {} open, {} blocked",
+            done, total, in_progress, open, blocked
         );
     }
 

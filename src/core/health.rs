@@ -91,7 +91,7 @@ mod tests {
         let tasks = vec![Task {
             id: "T1".into(),
             title: "x".into(),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             owner: "".into(),
             evidence: "".into(),
             notes: "".into(),

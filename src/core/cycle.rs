@@ -105,6 +105,7 @@ pub enum StopReason {
     LocalOnlyStuck,
     VerificationNotConfigured,
     BlockedTasksRequireIntervention,
+    NoTasksFound,
 }
 
 impl fmt::Display for StopReason {
@@ -123,6 +124,7 @@ impl fmt::Display for StopReason {
             StopReason::BlockedTasksRequireIntervention => {
                 write!(f, "Blocked tasks require human intervention")
             }
+            StopReason::NoTasksFound => write!(f, "No task files found in tasks/todo — please add markdown files"),
         }
     }
 }

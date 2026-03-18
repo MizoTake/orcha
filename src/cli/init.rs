@@ -21,8 +21,8 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
         orch_dir.join("profiles"),
         orch_dir.join("handoff"),
         orch_dir.join("agentworkspace"),
-        orch_dir.join("tasks").join("todo"),
-        orch_dir.join("tasks").join("doing"),
+        orch_dir.join("tasks").join("open"),
+        orch_dir.join("tasks").join("in-progress"),
         orch_dir.join("tasks").join("done"),
         orch_dir.join("tasks").join("blocked"),
     ];
@@ -35,7 +35,6 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
 
     // Write all template files
     let files: Vec<(std::path::PathBuf, String)> = vec![
-        (orch_dir.join("goal.md"), template::goal_md().to_string()),
         (
             orch_dir.join("orcha.yml"),
             template::orcha_yml().to_string(),
@@ -203,8 +202,8 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
     println!();
     println!("Next steps:");
     println!(
-        "  1. Edit {} with your objective",
-        orch_dir.join("goal.md").display()
+        "  1. Add task files to {}",
+        orch_dir.join("tasks").join("open").display()
     );
     println!(
         "  2. Edit {} for execution settings",

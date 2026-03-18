@@ -19,8 +19,8 @@ pub async fn execute(
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
 
-    // Find the next todo task
-    let next_task = task_store.next_issue().await?;
+    // Find the next open task
+    let next_task = task_store.next_open().await?;
     let mut task_entry = match next_task {
         Some(entry) => entry,
         None => {
@@ -45,27 +45,26 @@ pub async fn execute(
                 "impl",
                 "implementer",
                 "orch",
-                "No todo tasks available (some may be doing or blocked)",
+                "No open tasks available (some may be in-progress or blocked)",
             )
             .await?;
             return Ok(CycleDecision::NextPhase);
         }
     };
 
-    // Move task from todo → doing
+    // Move task from open → in-progress
     let file_name = task_entry.file_name.clone();
     let task_id = task_entry.frontmatter.id.clone();
     let task_title = task_entry.frontmatter.title.clone();
     task_entry.frontmatter.owner = "local_llm".to_string();
     let diff_before = changed_files_snapshot().await;
     task_store
-        .move_task(&file_name, TaskState::Todo, TaskState::Doing)
+        .move_task(&file_name, TaskState::Open, TaskState::InProgress)
         .await?;
-    task_entry.state = TaskState::Doing;
+    task_entry.state = TaskState::InProgress;
     task_store.update_task(&task_entry).await?;
     status.frontmatter.locks.active_task = Some(task_id.clone());
 
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role_path = workspace_md::resolve_role_file(orch_dir, "implementer")?;
     let role_name = role_path
         .file_name()
@@ -76,10 +75,6 @@ pub async fn execute(
 
     let context = AgentContext {
         context_files: vec![
-            ContextFile {
-                name: "goal.md".into(),
-                content: goal,
-            },
             ContextFile {
                 name: "status.md".into(),
                 content: status.content.clone(),
@@ -136,8 +131,11 @@ pub async fn execute(
     // A matching changed-files report in the response is a useful signal but
     // is not required when git already confirms that files were modified.
     if repo_changed {
+        // Commit the implementation changes before updating task state
+        git_commit(&format!("orcha: {} {}", task_id, task_title)).await;
+
         task_store
-            .move_task(&file_name, TaskState::Doing, TaskState::Done)
+            .move_task(&file_name, TaskState::InProgress, TaskState::Done)
             .await?;
         task_entry.state = TaskState::Done;
         task_entry.frontmatter.owner = response.model_used.clone();
@@ -168,7 +166,7 @@ pub async fn execute(
     }
 
     task_store
-        .move_task(&file_name, TaskState::Doing, TaskState::Blocked)
+        .move_task(&file_name, TaskState::InProgress, TaskState::Blocked)
         .await?;
     task_entry.state = TaskState::Blocked;
     task_entry.frontmatter.owner = response.model_used.clone();
@@ -219,6 +217,26 @@ fn update_section(content: &mut String, heading: &str, new_text: &str) {
             new_text,
             &content[section_end..]
         );
+    }
+}
+
+/// Stage all changes and commit with the given message.
+/// Failures are logged to stderr but do not abort the phase.
+async fn git_commit(message: &str) {
+    let stage = tokio::process::Command::new("git")
+        .args(["add", "-A"])
+        .output()
+        .await;
+    if let Err(e) = stage {
+        eprintln!("  ⚠ git add failed: {}", e);
+        return;
+    }
+    let commit = tokio::process::Command::new("git")
+        .args(["commit", "-m", message])
+        .output()
+        .await;
+    if let Err(e) = commit {
+        eprintln!("  ⚠ git commit failed: {}", e);
     }
 }
 

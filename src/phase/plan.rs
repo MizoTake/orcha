@@ -3,17 +3,15 @@ use std::path::Path;
 use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
 use crate::core::agent_workspace;
-use crate::core::cycle::CycleDecision;
+use crate::core::cycle::{CycleDecision, StopReason};
 use crate::core::status::StatusFile;
 use crate::core::status_log;
-use crate::core::task::{
-    parse_task_table, Task, TaskEntry, TaskFrontmatter, TaskState, TaskStore,
-};
+use crate::core::task::{TaskState, TaskStore};
 use crate::core::workspace_md;
-use crate::machine_config::MachineConfig;
 
 /// Phase 2: Plan
-/// Planner agent creates or updates the task plan.
+/// Planner agent reviews open tasks and produces an implementation strategy.
+/// The strategy is written to status notes so the impl agent can reference it.
 pub async fn execute(
     orch_dir: &Path,
     status: &mut StatusFile,
@@ -21,27 +19,40 @@ pub async fn execute(
     router: &AgentRouter,
 ) -> anyhow::Result<CycleDecision> {
     let log_path = agent_workspace::resolve_status_log_path(orch_dir);
+    let all_tasks = task_store.list_all().await?;
 
-    let existing_tasks = task_store.list_all().await?;
-    let has_remaining_work = existing_tasks
+    if all_tasks.is_empty() {
+        status_log::append(
+            &log_path,
+            "plan",
+            "planner",
+            "orch",
+            "No task files found in tasks/open. Please add markdown files to .orcha/tasks/open/",
+        )
+        .await?;
+        return Ok(CycleDecision::Blocked(StopReason::NoTasksFound));
+    }
+
+    let open_tasks: Vec<_> = all_tasks
         .iter()
-        .any(|t| t.state != TaskState::Done);
-    if !existing_tasks.is_empty() && has_remaining_work {
+        .filter(|t| t.state == TaskState::Open)
+        .collect();
+
+    if open_tasks.is_empty() {
         status_log::append(
             &log_path,
             "plan",
             "planner",
             "orch",
             &format!(
-                "Keeping existing task plan ({} tasks, remaining work detected)",
-                existing_tasks.len()
+                "No open tasks remaining ({} tasks total, all done or blocked)",
+                all_tasks.len()
             ),
         )
         .await?;
         return Ok(CycleDecision::NextPhase);
     }
 
-    let goal = tokio::fs::read_to_string(orch_dir.join("goal.md")).await?;
     let role_path = workspace_md::resolve_role_file(orch_dir, "planner")?;
     let role_name = role_path
         .file_name()
@@ -50,21 +61,32 @@ pub async fn execute(
         .to_string();
     let role = tokio::fs::read_to_string(&role_path).await?;
 
-    let task_summary = task_store.render_summary_table().await?;
+    // Build task list with full content for planner context
+    let open_tasks_content: String = open_tasks
+        .iter()
+        .map(|t| {
+            format!(
+                "### {} — {}\n\n{}\n",
+                t.frontmatter.id,
+                t.frontmatter.title,
+                t.content.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n---\n\n");
+
+    let done_count = all_tasks.iter().filter(|t| t.state == TaskState::Done).count();
+    let blocked_count = all_tasks.iter().filter(|t| t.state == TaskState::Blocked).count();
 
     let context = AgentContext {
         context_files: vec![
             ContextFile {
-                name: "goal.md".into(),
-                content: goal.clone(),
+                name: "open_tasks.md".into(),
+                content: open_tasks_content,
             },
             ContextFile {
                 name: "status.md".into(),
                 content: status.content.clone(),
-            },
-            ContextFile {
-                name: "tasks_summary".into(),
-                content: task_summary,
             },
             ContextFile {
                 name: role_name,
@@ -73,14 +95,19 @@ pub async fn execute(
         ],
         role: "planner".to_string(),
         instruction: format!(
-            "Review the goal and current status. Create or update the task plan.\n\
-             Current cycle: {}\n\
-             Return an updated task table in this exact format:\n\
-             | ID | Title | State | Owner | Evidence | Notes |\n\
-             |---|---|---|---|---|---|\n\
-             | T1 | Task title | todo | agent_name | | description |\n\n\
-             Also provide a brief plan rationale after the table.",
-            status.frontmatter.cycle
+            "Review the open tasks and produce an implementation strategy for this cycle.\n\
+             Cycle: {}\n\
+             Open: {} / Done: {} / Blocked: {}\n\n\
+             Your response must include:\n\
+             1. **Recommended order** — which task to tackle first and why\n\
+             2. **Dependencies** — any ordering constraints between tasks\n\
+             3. **Risks** — potential blockers or unknowns to watch for\n\
+             4. **Approach notes** — brief implementation guidance per task\n\n\
+             Keep the response concise. The implementer agent will read this plan.",
+            status.frontmatter.cycle,
+            open_tasks.len(),
+            done_count,
+            blocked_count,
         ),
     };
 
@@ -96,106 +123,86 @@ pub async fn execute(
     )
     .await?;
 
-    // Try to extract task table from the planner response.
-    let mut applied_tasks = 0usize;
-    if let Ok(new_tasks) = parse_task_table(&response.content) {
-        if !new_tasks.is_empty() {
-            applied_tasks = new_tasks.len();
-            create_task_files(task_store, &new_tasks).await?;
-        }
-    }
-
-    // Fallback: derive initial tasks from machine config acceptance criteria.
-    if applied_tasks == 0 {
-        let machine = MachineConfig::load(orch_dir)?;
-        let fallback_tasks =
-            tasks_from_acceptance_criteria(&machine.execution.acceptance_criteria);
-        if !fallback_tasks.is_empty() {
-            applied_tasks = fallback_tasks.len();
-            create_task_files(task_store, &fallback_tasks).await?;
-        }
-    }
-
     status_log::append(
         &log_path,
         "plan",
         "planner",
         &response.model_used,
-        &format!("Plan updated. Tasks initialized: {}", applied_tasks),
+        &format!(
+            "Strategy planned for {} open task(s)",
+            open_tasks.len()
+        ),
     )
     .await?;
+
+    // Write plan summary to status notes so impl agent can reference it
+    let plan_note = format!(
+        "## Plan (Cycle {})\n\n{}",
+        status.frontmatter.cycle,
+        truncate_plan(&response.content, 800)
+    );
+    update_latest_notes(&mut status.content, &plan_note);
 
     Ok(CycleDecision::NextPhase)
 }
 
-/// Create task files in the todo folder from parsed Task structs.
-async fn create_task_files(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Result<()> {
-    for task in tasks {
-        let file_name = TaskEntry::generate_file_name(&task.id, &task.title);
-        let entry = TaskEntry {
-            frontmatter: TaskFrontmatter {
-                id: task.id.clone(),
-                title: task.title.clone(),
-                owner: task.owner.clone(),
-                created: chrono::Utc::now().to_rfc3339(),
-            },
-            content: format!(
-                "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
-                task.title, task.notes
-            ),
-            state: TaskState::Todo,
-            file_name,
-        };
-        task_store.create_task(&entry).await?;
+fn truncate_plan(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
     }
-    Ok(())
+    let boundary = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max)
+        .last()
+        .unwrap_or(0);
+    format!("{}... (truncated)", &s[..boundary])
 }
 
-fn tasks_from_acceptance_criteria(criteria: &[String]) -> Vec<Task> {
-    criteria
-        .iter()
-        .enumerate()
-        .map(|(idx, c)| Task {
-            id: format!("T{}", idx + 1),
-            title: sanitize_table_cell(c),
-            state: TaskState::Todo,
-            owner: String::new(),
-            evidence: String::new(),
-            notes: "Derived from orcha.yml execution.acceptance_criteria".to_string(),
-        })
-        .collect()
-}
-
-fn sanitize_table_cell(s: &str) -> String {
-    s.replace('|', "/").trim().to_string()
+fn update_latest_notes(content: &mut String, note: &str) {
+    if let Some(pos) = content.find("## Latest Notes") {
+        let after_start = (pos + "## Latest Notes".len()).min(content.len());
+        let after = &content[after_start..];
+        let section_end = after
+            .find("\n## ")
+            .map(|p| after_start + p)
+            .unwrap_or(content.len());
+        *content = format!(
+            "{}\n## Latest Notes\n\n{}\n{}",
+            content[..pos].trim_end(),
+            note,
+            &content[section_end..]
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::core::task::TaskState;
-
-    use super::tasks_from_acceptance_criteria;
+    use super::{truncate_plan, update_latest_notes};
 
     #[test]
-    fn builds_tasks_from_acceptance_criteria() {
-        let criteria = vec![
-            "First criterion".to_string(),
-            "Second criterion".to_string(),
-        ];
-
-        let tasks = tasks_from_acceptance_criteria(&criteria);
-        assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[0].id, "T1");
-        assert_eq!(tasks[0].state, TaskState::Todo);
-        assert_eq!(tasks[1].id, "T2");
-        assert_eq!(tasks[1].state, TaskState::Todo);
+    fn truncate_plan_within_limit_is_unchanged() {
+        assert_eq!(truncate_plan("hello", 10), "hello");
     }
 
     #[test]
-    fn sanitizes_pipe_for_markdown_table_cell() {
-        let criteria = vec!["API | auth".to_string()];
+    fn truncate_plan_over_limit_appends_suffix() {
+        let result = truncate_plan("hello world", 5);
+        assert!(result.ends_with("... (truncated)"));
+    }
 
-        let tasks = tasks_from_acceptance_criteria(&criteria);
-        assert_eq!(tasks[0].title, "API / auth");
+    #[test]
+    fn update_latest_notes_replaces_section() {
+        let mut content = "## Latest Notes\n\nOld.\n".to_string();
+        update_latest_notes(&mut content, "New plan.");
+        assert!(content.contains("New plan."));
+        assert!(!content.contains("Old."));
+    }
+
+    #[test]
+    fn update_latest_notes_no_panic_at_end_of_string() {
+        let mut content = "## Latest Notes".to_string();
+        update_latest_notes(&mut content, "Note.");
+        assert!(content.contains("Note."));
     }
 }

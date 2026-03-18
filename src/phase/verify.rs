@@ -70,10 +70,11 @@ fn verification_commands_from_config(orch_dir: &Path) -> anyhow::Result<Vec<Stri
 
 fn update_latest_notes(content: &mut String, note: &str) {
     if let Some(pos) = content.find("## Latest Notes") {
-        let after = &content[pos + 16..];
+        let after_start = (pos + "## Latest Notes".len()).min(content.len());
+        let after = &content[after_start..];
         let section_end = after
             .find("\n## ")
-            .map(|p| pos + 16 + p)
+            .map(|p| after_start + p)
             .unwrap_or(content.len());
         *content = format!(
             "{}\n## Latest Notes\n\n{}\n{}",

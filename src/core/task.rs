@@ -12,8 +12,8 @@ use crate::markdown::frontmatter::{self, Document};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
-    Todo,
-    Doing,
+    Open,
+    InProgress,
     Done,
     Blocked,
 }
@@ -21,8 +21,8 @@ pub enum TaskState {
 impl fmt::Display for TaskState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TaskState::Todo => write!(f, "todo"),
-            TaskState::Doing => write!(f, "doing"),
+            TaskState::Open => write!(f, "open"),
+            TaskState::InProgress => write!(f, "in-progress"),
             TaskState::Done => write!(f, "done"),
             TaskState::Blocked => write!(f, "blocked"),
         }
@@ -32,8 +32,8 @@ impl fmt::Display for TaskState {
 impl TaskState {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
-            "todo" | "issue" => Some(TaskState::Todo),
-            "doing" | "wip" => Some(TaskState::Doing),
+            "open" | "todo" | "issue" | "backlog" => Some(TaskState::Open),
+            "in-progress" | "doing" | "wip" => Some(TaskState::InProgress),
             "done" => Some(TaskState::Done),
             "blocked" => Some(TaskState::Blocked),
             _ => None,
@@ -42,8 +42,8 @@ impl TaskState {
 
     pub fn folder_name(&self) -> &str {
         match self {
-            TaskState::Todo => "todo",
-            TaskState::Doing => "doing",
+            TaskState::Open => "open",
+            TaskState::InProgress => "in-progress",
             TaskState::Done => "done",
             TaskState::Blocked => "blocked",
         }
@@ -54,16 +54,16 @@ impl TaskState {
     }
 
     pub const ALL: [TaskState; 4] = [
-        TaskState::Todo,
-        TaskState::Doing,
+        TaskState::Open,
+        TaskState::InProgress,
         TaskState::Done,
         TaskState::Blocked,
     ];
 
     pub fn legacy_folder_names(&self) -> &'static [&'static str] {
         match self {
-            TaskState::Todo => &["todo", "issue"],
-            TaskState::Doing => &["doing", "wip"],
+            TaskState::Open => &["open", "todo", "issue", "backlog"],
+            TaskState::InProgress => &["in-progress", "doing", "wip"],
             TaskState::Done => &["done"],
             TaskState::Blocked => &["blocked"],
         }
@@ -252,9 +252,9 @@ impl TaskStore {
         Ok(entries)
     }
 
-    /// Get the next todo task (first by ID order).
-    pub async fn next_issue(&self) -> anyhow::Result<Option<TaskEntry>> {
-        let issues = self.list_by_state(TaskState::Todo).await?;
+    /// Get the next open task (first by ID order).
+    pub async fn next_open(&self) -> anyhow::Result<Option<TaskEntry>> {
+        let issues = self.list_by_state(TaskState::Open).await?;
         Ok(issues.into_iter().next())
     }
 
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(tasks[0].id, "T1");
         assert_eq!(tasks[0].state, TaskState::Done);
         assert_eq!(tasks[1].id, "T2");
-        assert_eq!(tasks[1].state, TaskState::Doing);
+        assert_eq!(tasks[1].state, TaskState::InProgress);
         assert_eq!(tasks[1].notes, "WIP");
     }
 
@@ -448,7 +448,7 @@ mod tests {
         let tasks = vec![Task {
             id: "T1".into(),
             title: "Setup".into(),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             owner: "local_llm".into(),
             evidence: "".into(),
             notes: "".into(),
@@ -457,13 +457,13 @@ mod tests {
         let parsed = parse_task_table(&rendered).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].id, "T1");
-        assert_eq!(parsed[0].state, TaskState::Todo);
+        assert_eq!(parsed[0].state, TaskState::Open);
     }
 
     #[test]
     fn task_state_folder_names() {
-        assert_eq!(TaskState::Todo.folder_name(), "todo");
-        assert_eq!(TaskState::Doing.folder_name(), "doing");
+        assert_eq!(TaskState::Open.folder_name(), "open");
+        assert_eq!(TaskState::InProgress.folder_name(), "in-progress");
         assert_eq!(TaskState::Done.folder_name(), "done");
         assert_eq!(TaskState::Blocked.folder_name(), "blocked");
     }
@@ -510,7 +510,7 @@ mod tests {
                 created: "2026-01-01T00:00:00Z".into(),
             },
             content: "## Description\nDo something\n".into(),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             file_name: "T1-test-task.md".into(),
         };
         store.create_task(&entry).await.unwrap();
@@ -518,7 +518,7 @@ mod tests {
         let all = store.list_all().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].frontmatter.id, "T1");
-        assert_eq!(all[0].state, TaskState::Todo);
+        assert_eq!(all[0].state, TaskState::Open);
     }
 
     #[tokio::test]
@@ -535,21 +535,21 @@ mod tests {
                 created: String::new(),
             },
             content: String::new(),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             file_name: "T1-test.md".into(),
         };
         store.create_task(&entry).await.unwrap();
 
         store
-            .move_task("T1-test.md", TaskState::Todo, TaskState::Doing)
+            .move_task("T1-test.md", TaskState::Open, TaskState::InProgress)
             .await
             .unwrap();
 
-        let issues = store.list_by_state(TaskState::Todo).await.unwrap();
-        let wips = store.list_by_state(TaskState::Doing).await.unwrap();
-        assert!(issues.is_empty());
-        assert_eq!(wips.len(), 1);
-        assert_eq!(wips[0].frontmatter.id, "T1");
+        let open_tasks = store.list_by_state(TaskState::Open).await.unwrap();
+        let in_progress = store.list_by_state(TaskState::InProgress).await.unwrap();
+        assert!(open_tasks.is_empty());
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(in_progress[0].frontmatter.id, "T1");
     }
 
     #[tokio::test]
@@ -568,7 +568,7 @@ mod tests {
                 created: String::new(),
             },
             content: String::new(),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             file_name: "T3-third.md".into(),
         };
         store.create_task(&entry).await.unwrap();
@@ -578,9 +578,12 @@ mod tests {
 
     #[test]
     fn legacy_state_names_still_parse() {
-        assert_eq!(TaskState::from_str("issue"), Some(TaskState::Todo));
-        assert_eq!(TaskState::from_str("wip"), Some(TaskState::Doing));
-        assert_eq!(TaskState::from_folder_name("issue"), Some(TaskState::Todo));
-        assert_eq!(TaskState::from_folder_name("wip"), Some(TaskState::Doing));
+        assert_eq!(TaskState::from_str("issue"), Some(TaskState::Open));
+        assert_eq!(TaskState::from_str("todo"), Some(TaskState::Open));
+        assert_eq!(TaskState::from_str("backlog"), Some(TaskState::Open));
+        assert_eq!(TaskState::from_str("wip"), Some(TaskState::InProgress));
+        assert_eq!(TaskState::from_str("doing"), Some(TaskState::InProgress));
+        assert_eq!(TaskState::from_folder_name("issue"), Some(TaskState::Open));
+        assert_eq!(TaskState::from_folder_name("wip"), Some(TaskState::InProgress));
     }
 }
