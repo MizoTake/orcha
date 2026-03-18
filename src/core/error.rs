@@ -37,9 +37,6 @@ pub enum OrchaError {
     #[error("Lock conflict: {holder} currently holds the write lock")]
     LockConflict { holder: String },
 
-    #[error("Goal not configured: please edit .orcha/goal.md")]
-    GoalNotConfigured,
-
     #[error("Machine config error at {path}: {reason}")]
     MachineConfigError { path: PathBuf, reason: String },
 }

@@ -81,7 +81,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Run {
             enforce_lock,
-            spec,
             reset_cycle,
             no_timeout,
         } => {
@@ -90,7 +89,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 &cli.orch_dir,
                 &config,
                 !enforce_lock,
-                spec.as_deref(),
                 reset_cycle,
                 no_timeout,
             )

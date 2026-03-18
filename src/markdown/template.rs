@@ -1,39 +1,5 @@
 /// Template content for `orcha init`.
 
-pub fn goal_md() -> &'static str {
-    r#"# Goal
-
-## Background
-
-<!-- Describe the background and motivation for this goal -->
-
-## Acceptance Criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-## Constraints
-
-- Constraint 1
-
-## Verification Commands
-
-Execution commands are defined in `orcha.yml` under:
-
-```yaml
-execution:
-  verification:
-    commands:
-      - "cargo test"
-```
-
-## Quality Priority
-
-<!-- speed / cost / quality -->
-cost
-"#
-}
-
 pub fn task_md(id: &str, title: &str) -> String {
     format!(
         r#"---
@@ -131,7 +97,7 @@ disabled_agents: []
 
 ## Goal
 
-(See goal.md)
+(See task files in .orcha/tasks/todo/)
 
 ## Overall
 
@@ -145,7 +111,7 @@ None.
 
 ## Next Actions
 
-1. Configure goal.md with your objective
+1. Add task markdown files to .orcha/tasks/todo/
 2. Review `orcha.yml` and ensure at least one implementation-capable CLI agent is configured
 3. Run `orcha run` to start
 
@@ -172,14 +138,13 @@ pub fn role_planner_md() -> &'static str {
 
 ## Mission
 
-Analyze the goal and current status to create or update a task plan. Break down the goal into concrete, actionable tasks.
+Analyze the task files and current status to review the task plan. Identify remaining work and ensure tasks are actionable.
 
 ## Checklist
 
-- [ ] Read goal.md and understand acceptance criteria
+- [ ] Read task files from .orcha/tasks/todo/ and understand acceptance criteria
 - [ ] Review current status and completed tasks
 - [ ] Identify remaining work
-- [ ] Create/update task table with clear, atomic tasks
 - [ ] Assign priorities and owners
 
 ## Output Format
@@ -286,7 +251,7 @@ Prepare briefing context for the current cycle. Summarize the current state, rec
 
 ## Checklist
 
-- [ ] Read goal.md
+- [ ] Read task files from .orcha/tasks/
 - [ ] Read status.md
 - [ ] Read recent status_log entries
 - [ ] Check inbox for external messages
@@ -295,7 +260,7 @@ Prepare briefing context for the current cycle. Summarize the current state, rec
 ## Output Format
 
 Provide a briefing document with:
-1. Goal summary
+1. Task summary
 2. Current progress
 3. Outstanding issues
 4. Inbox messages (if any)

@@ -1,14 +1,13 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::future::Future;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
-use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::agent::{AgentContext, AgentKind, ContextFile, router::AgentRouter};
+use crate::agent::{AgentKind, router::AgentRouter};
 use crate::config::AppConfig;
 use crate::core::cycle::{CycleDecision, Phase, StopReason};
 use crate::core::error::OrchaError;
@@ -17,18 +16,17 @@ use crate::core::profile;
 use crate::core::agent_workspace;
 use crate::core::status::{StatusFile, VerifyStatus};
 use crate::core::status_log;
-use crate::core::task::{Task, TaskState, TaskStore, TaskEntry, TaskFrontmatter, parse_task_table};
+use crate::core::task::TaskStore;
 use crate::core::structured_log;
 use crate::core::workspace_md;
 use crate::machine_config::{MachineConfig, ProviderMode};
 use crate::phase;
 
-/// Execute `orcha run`: continue cycles until goal completion or stop condition.
+/// Execute `orcha run`: continue cycles until task completion or stop condition.
 pub async fn execute(
     orch_dir: &Path,
     config: &AppConfig,
     allow_concurrent: bool,
-    spec_path: Option<&Path>,
     reset_cycle: bool,
     no_timeout: bool,
 ) -> anyhow::Result<()> {
@@ -98,20 +96,6 @@ pub async fn execute(
     emit_preflight_issues(&preflight_issues, &log_path).await?;
     if let Some(reason) = fatal_preflight_reason(&preflight_issues) {
         return Err(OrchaError::StopCondition { reason }.into());
-    }
-
-    if let Some(bootstrap_request) = resolve_bootstrap_request(orch_dir, &task_store, spec_path).await? {
-        apply_spec_bootstrap(
-            orch_dir,
-            &mut status,
-            &mut machine,
-            &runtime_config,
-            &task_store,
-            &bootstrap_request,
-        )
-        .await?;
-        status.frontmatter.last_update = chrono::Utc::now().to_rfc3339();
-        status.save(&status_path).await?;
     }
 
     let mut terminal_error: Option<anyhow::Error> = None;
@@ -204,7 +188,7 @@ pub async fn execute(
             Phase::Review => {
                 execute_phase_with_heartbeat(
                     phase,
-                    phase::review::execute(orch_dir, &mut status, &router),
+                    phase::review::execute(orch_dir, &mut status, &task_store, &router),
                     phase_timeout,
                 )
                     .await
@@ -768,26 +752,6 @@ async fn append_structured_event(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct SpecBootstrapPayload {
-    goal_summary: String,
-    #[serde(default)]
-    acceptance_criteria: Vec<String>,
-    #[serde(default)]
-    verification_commands: Vec<String>,
-    #[serde(default)]
-    ambiguities: Vec<String>,
-}
-
-#[derive(Debug)]
-struct ParsedSpecBootstrap {
-    goal_summary: String,
-    acceptance_criteria: Vec<String>,
-    verification_commands: Vec<String>,
-    ambiguities: Vec<String>,
-    tasks: Vec<Task>,
-}
-
 #[derive(Debug, Clone)]
 struct CycleDiffFileDelta {
     path: String,
@@ -800,18 +764,6 @@ struct CycleDiffSummary {
     total_added: i64,
     total_deleted: i64,
     changed_files: Vec<CycleDiffFileDelta>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpecBootstrapMode {
-    FullSync,
-    TaskOnly,
-}
-
-#[derive(Debug)]
-struct SpecBootstrapRequest {
-    source_path: PathBuf,
-    mode: SpecBootstrapMode,
 }
 
 fn resolve_profile_rules_for_cycle(
@@ -856,421 +808,6 @@ fn resolve_profile_rules_for_cycle(
     }
 
     Ok((resolved_profile_ref, resolved_profile_name, profile_rules))
-}
-
-async fn resolve_bootstrap_request(
-    orch_dir: &Path,
-    task_store: &TaskStore,
-    spec_path: Option<&Path>,
-) -> anyhow::Result<Option<SpecBootstrapRequest>> {
-    if let Some(spec_path) = spec_path {
-        return Ok(Some(SpecBootstrapRequest {
-            source_path: resolve_spec_path(spec_path)?,
-            mode: SpecBootstrapMode::FullSync,
-        }));
-    }
-
-    if task_store.is_empty().await? {
-        return Ok(Some(SpecBootstrapRequest {
-            source_path: orch_dir.join("goal.md"),
-            mode: SpecBootstrapMode::TaskOnly,
-        }));
-    }
-
-    Ok(None)
-}
-
-async fn apply_spec_bootstrap(
-    orch_dir: &Path,
-    status: &mut StatusFile,
-    machine: &mut MachineConfig,
-    config: &AppConfig,
-    task_store: &TaskStore,
-    request: &SpecBootstrapRequest,
-) -> anyhow::Result<()> {
-    let resolved_spec_path = request.source_path.clone();
-    let spec_content = tokio::fs::read_to_string(&resolved_spec_path).await.map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to read spec file '{}': {}",
-            resolved_spec_path.display(),
-            e
-        )
-    })?;
-    let spec_name = resolved_spec_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("spec.md");
-    let goal_path = orch_dir.join("goal.md");
-    let current_goal = tokio::fs::read_to_string(&goal_path)
-        .await
-        .unwrap_or_else(|_| String::new());
-
-    let (_, _, profile_rules) =
-        resolve_profile_rules_for_cycle(orch_dir, machine, status, false)?;
-    let disabled_agents: HashSet<AgentKind> = HashSet::new();
-    let router = AgentRouter::new(config, &profile_rules, &disabled_agents)?;
-
-    let instruction = match request.mode {
-        SpecBootstrapMode::FullSync => full_spec_bootstrap_instruction().to_string(),
-        SpecBootstrapMode::TaskOnly => task_breakdown_instruction().to_string(),
-    };
-    let context = AgentContext {
-        context_files: vec![
-            ContextFile {
-                name: spec_name.to_string(),
-                content: spec_content,
-            },
-            ContextFile {
-                name: "goal.md".to_string(),
-                content: current_goal,
-            },
-            ContextFile {
-                name: "status.md".to_string(),
-                content: status.content.clone(),
-            },
-        ],
-        role: "planner".to_string(),
-        instruction,
-    };
-
-    let bootstrap_label = match request.mode {
-        SpecBootstrapMode::FullSync => "spec bootstrap",
-        SpecBootstrapMode::TaskOnly => "task breakdown",
-    };
-    println!("  {} {}: {}", "▶".green(), bootstrap_label, resolved_spec_path.display());
-    let response = router.default_agent().respond(&context).await?;
-    crate::core::agent_workspace::write_response(
-        orch_dir,
-        status.frontmatter.cycle,
-        match request.mode {
-            SpecBootstrapMode::FullSync => "spec_bootstrap",
-            SpecBootstrapMode::TaskOnly => "task_breakdown",
-        },
-        "planner",
-        &response.model_used,
-        &response.content,
-    )
-    .await?;
-
-    let log_path = agent_workspace::resolve_status_log_path(orch_dir);
-    match request.mode {
-        SpecBootstrapMode::FullSync => {
-            let parsed = parse_spec_bootstrap_response(&response.content)?;
-            let new_goal = render_goal_from_spec(spec_name, &parsed);
-            tokio::fs::write(&goal_path, new_goal).await?;
-
-            if !parsed.acceptance_criteria.is_empty() {
-                machine.execution.acceptance_criteria = parsed.acceptance_criteria.clone();
-            }
-            if !parsed.verification_commands.is_empty() {
-                machine.execution.verification.commands = parsed.verification_commands.clone();
-            }
-
-            let machine_path = MachineConfig::path(orch_dir);
-            let machine_yaml = serde_yaml::to_string(machine)?;
-            tokio::fs::write(&machine_path, machine_yaml).await?;
-
-            if !parsed.tasks.is_empty() {
-                create_task_files_from_tasks(task_store, &parsed.tasks).await?;
-            }
-
-            let applied_summary = format!(
-                "Spec bootstrap applied from {} (criteria: {}, verify commands: {}, tasks: {}, ambiguities: {})",
-                spec_name,
-                machine.execution.acceptance_criteria.len(),
-                machine.execution.verification.commands.len(),
-                parsed.tasks.len(),
-                parsed.ambiguities.len()
-            );
-            status_log::append(
-                &log_path,
-                "briefing",
-                "scribe",
-                &response.model_used,
-                &applied_summary,
-            )
-            .await?;
-            append_structured_event(
-                orch_dir,
-                status,
-                Phase::Briefing,
-                "spec_bootstrap_applied",
-                &applied_summary,
-            )
-            .await;
-
-            if machine.execution.human_escalation.on_ambiguous_spec && !parsed.ambiguities.is_empty()
-            {
-                let reason = format!(
-                    "Specification contains ambiguities requiring human input:\n- {}",
-                    parsed.ambiguities.join("\n- ")
-                );
-                request_human_intervention(
-                    orch_dir,
-                    status,
-                    "ambiguous_spec",
-                    &reason,
-                    &machine.execution.human_escalation.channel,
-                )
-                .await?;
-                status_log::append(
-                    &log_path,
-                    "briefing",
-                    "scribe",
-                    "orch",
-                    "Spec bootstrap stopped for human clarification",
-                )
-                .await?;
-                return Err(OrchaError::StopCondition {
-                    reason: "Ambiguous specification requires human input".to_string(),
-                }
-                .into());
-            }
-        }
-        SpecBootstrapMode::TaskOnly => {
-            let tasks = parse_task_breakdown_response(
-                &response.content,
-                &machine.execution.acceptance_criteria,
-            )?;
-            if !tasks.is_empty() {
-                create_task_files_from_tasks(task_store, &tasks).await?;
-            }
-            let applied_summary = format!(
-                "Task breakdown initialized from {} (tasks: {})",
-                spec_name,
-                tasks.len()
-            );
-            status_log::append(
-                &log_path,
-                "plan",
-                "planner",
-                &response.model_used,
-                &applied_summary,
-            )
-            .await?;
-            append_structured_event(
-                orch_dir,
-                status,
-                Phase::Plan,
-                "task_breakdown_applied",
-                &applied_summary,
-            )
-            .await;
-        }
-    }
-
-    Ok(())
-}
-
-fn full_spec_bootstrap_instruction() -> &'static str {
-    "Analyze the provided specification and output exactly two parts:\n\
-1) A single JSON fenced code block with keys:\n\
-   - goal_summary: string\n\
-   - acceptance_criteria: string[]\n\
-   - verification_commands: string[]\n\
-   - ambiguities: string[]\n\
-2) A markdown task table in this exact format:\n\
-| ID | Title | State | Owner | Evidence | Notes |\n\
-|---|---|---|---|---|---|\n\
-| T1 | Task title | todo | implementer | | reason |\n\
-\n\
-Rules:\n\
-- Keep acceptance_criteria concrete and testable.\n\
-- verification_commands must be runnable shell commands.\n\
-- Put uncertain points in ambiguities.\n\
-- State must be todo for all initial tasks."
-}
-
-fn task_breakdown_instruction() -> &'static str {
-    "Break down the provided goal/spec into an initial task plan.\n\
-Return a markdown task table in this exact format:\n\
-| ID | Title | State | Owner | Evidence | Notes |\n\
-|---|---|---|---|---|---|\n\
-| T1 | Task title | todo | implementer | | reason |\n\
-\n\
-Rules:\n\
-- Create atomic tasks that can be completed in short cycles.\n\
-- Set State to todo for all rows.\n\
-- Keep IDs sequential as T1, T2, T3..."
-}
-
-fn parse_task_breakdown_response(
-    response: &str,
-    fallback_criteria: &[String],
-) -> anyhow::Result<Vec<Task>> {
-    if let Ok(tasks) = parse_task_table(response) {
-        if !tasks.is_empty() {
-            return Ok(tasks);
-        }
-    }
-
-    let fallback = tasks_from_criteria(fallback_criteria);
-    if fallback.is_empty() {
-        anyhow::bail!("Task breakdown response did not contain a valid task table");
-    }
-
-    Ok(fallback)
-}
-
-fn resolve_spec_path(spec_path: &Path) -> anyhow::Result<PathBuf> {
-    if spec_path.is_absolute() {
-        return Ok(spec_path.to_path_buf());
-    }
-    Ok(std::env::current_dir()?.join(spec_path))
-}
-
-fn parse_spec_bootstrap_response(response: &str) -> anyhow::Result<ParsedSpecBootstrap> {
-    let json_block = extract_fenced_block(response, "json").ok_or_else(|| {
-        anyhow::anyhow!(
-            "Spec bootstrap response must include a JSON fenced block with goal_summary/acceptance_criteria/verification_commands/ambiguities"
-        )
-    })?;
-    let payload: SpecBootstrapPayload = serde_json::from_str(&json_block).map_err(|e| {
-        anyhow::anyhow!("Failed to parse spec bootstrap JSON block: {}", e)
-    })?;
-
-    let acceptance_criteria = normalize_non_empty_lines(&payload.acceptance_criteria);
-    let verification_commands = normalize_non_empty_lines(&payload.verification_commands);
-    let ambiguities = normalize_non_empty_lines(&payload.ambiguities);
-    let tasks = match parse_task_table(response) {
-        Ok(parsed) if !parsed.is_empty() => parsed,
-        _ => tasks_from_criteria(&acceptance_criteria),
-    };
-
-    Ok(ParsedSpecBootstrap {
-        goal_summary: payload.goal_summary.trim().to_string(),
-        acceptance_criteria,
-        verification_commands,
-        ambiguities,
-        tasks,
-    })
-}
-
-fn extract_fenced_block(raw: &str, language: &str) -> Option<String> {
-    let mut in_block = false;
-    let mut matches_language = false;
-    let mut lines = Vec::new();
-    let lang = language.to_ascii_lowercase();
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("```") {
-            if !in_block {
-                in_block = true;
-                let declared = rest.trim().to_ascii_lowercase();
-                matches_language = declared.is_empty() || declared == lang;
-                continue;
-            }
-            if in_block && matches_language {
-                return Some(lines.join("\n"));
-            }
-            in_block = false;
-            matches_language = false;
-            lines.clear();
-            continue;
-        }
-
-        if in_block && matches_language {
-            lines.push(line.to_string());
-        }
-    }
-
-    None
-}
-
-fn normalize_non_empty_lines(items: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::new();
-    for item in items {
-        let trimmed = item.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let key = trimmed.to_ascii_lowercase();
-        if seen.insert(key) {
-            normalized.push(trimmed.to_string());
-        }
-    }
-    normalized
-}
-
-fn tasks_from_criteria(criteria: &[String]) -> Vec<Task> {
-    criteria
-        .iter()
-        .enumerate()
-        .map(|(idx, criterion)| Task {
-            id: format!("T{}", idx + 1),
-            title: sanitize_markdown_cell(criterion),
-            state: TaskState::Todo,
-            owner: "implementer".to_string(),
-            evidence: String::new(),
-            notes: "Generated from spec acceptance criteria".to_string(),
-        })
-        .collect()
-}
-
-async fn create_task_files_from_tasks(task_store: &TaskStore, tasks: &[Task]) -> anyhow::Result<()> {
-    for task in tasks {
-        let file_name = TaskEntry::generate_file_name(&task.id, &task.title);
-        let entry = TaskEntry {
-            frontmatter: TaskFrontmatter {
-                id: task.id.clone(),
-                title: task.title.clone(),
-                owner: task.owner.clone(),
-                created: chrono::Utc::now().to_rfc3339(),
-            },
-            content: format!(
-                "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\n{}\n",
-                task.title, task.notes
-            ),
-            state: TaskState::Todo,
-            file_name,
-        };
-        task_store.create_task(&entry).await?;
-    }
-    Ok(())
-}
-
-fn sanitize_markdown_cell(value: &str) -> String {
-    value.replace('|', "/").trim().to_string()
-}
-
-fn render_goal_from_spec(spec_name: &str, parsed: &ParsedSpecBootstrap) -> String {
-    let mut out = String::new();
-    out.push_str("# Goal\n\n");
-    out.push_str("## Background\n\n");
-    if parsed.goal_summary.is_empty() {
-        out.push_str("- Generated from spec bootstrap.\n");
-    } else {
-        out.push_str(&parsed.goal_summary);
-        out.push('\n');
-    }
-    out.push_str("\n## Acceptance Criteria\n\n");
-    if parsed.acceptance_criteria.is_empty() {
-        out.push_str("- [ ] Define acceptance criteria from specification\n");
-    } else {
-        for criterion in &parsed.acceptance_criteria {
-            out.push_str(&format!("- [ ] {}\n", criterion));
-        }
-    }
-    out.push_str("\n## Constraints\n\n");
-    out.push_str(&format!("- Source spec: {}\n", spec_name));
-    if !parsed.ambiguities.is_empty() {
-        out.push_str("- Ambiguities to clarify:\n");
-        for ambiguity in &parsed.ambiguities {
-            out.push_str(&format!("  - {}\n", ambiguity));
-        }
-    }
-    out.push_str("\n## Verification Commands\n\n");
-    out.push_str("Execution commands are defined in `orcha.yml` under:\n\n");
-    out.push_str("```yaml\nexecution:\n  verification:\n    commands:\n");
-    for command in &parsed.verification_commands {
-        out.push_str(&format!("      - \"{}\"\n", command.replace('\"', "\\\"")));
-    }
-    out.push_str("```\n\n");
-    out.push_str("## Quality Priority\n\n");
-    out.push_str("quality\n");
-    out
 }
 
 async fn request_human_intervention(
@@ -1579,10 +1116,10 @@ mod tests {
         detect_limit_reached_cli_agent, disabled_paid_agents_for_budget, fatal_preflight_reason,
         has_paid_agent_available, has_any_cli_agent, is_empty_stdout_error,
         is_placeholder_verification_command, lock_id_for_pid, parse_git_numstat_snapshot, parse_lock_pid,
-        parse_spec_bootstrap_response, parse_task_breakdown_response, parse_verify_status_counts,
+        parse_verify_status_counts,
         process_exists, reset_status_to_cycle_zero, resolve_runtime_config,
-        release_writer_lock_for_pid, resolve_bootstrap_request, PreflightSeverity,
-        SpecBootstrapMode, execute,
+        release_writer_lock_for_pid, PreflightSeverity,
+        execute,
     };
     use crate::agent::AgentKind;
     use crate::cli::init;
@@ -1728,33 +1265,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_spec_bootstrap_response_extracts_json_and_tasks() {
-        let response = r#"
-```json
-{
-  "goal_summary": "Implement todo library",
-  "acceptance_criteria": ["Create task", "List tasks"],
-  "verification_commands": ["cargo test"],
-  "ambiguities": ["Persistence format is unspecified"]
-}
-```
-
-| ID | Title | State | Owner | Evidence | Notes |
-|---|---|---|---|---|---|
-| T1 | Add create API | todo | implementer | | from spec |
-| T2 | Add list API | todo | implementer | | from spec |
-"#;
-
-        let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
-        assert_eq!(parsed.goal_summary, "Implement todo library");
-        assert_eq!(parsed.acceptance_criteria.len(), 2);
-        assert_eq!(parsed.verification_commands, vec!["cargo test"]);
-        assert_eq!(parsed.ambiguities.len(), 1);
-        assert_eq!(parsed.tasks.len(), 2);
-        assert_eq!(parsed.tasks[0].id, "T1");
-    }
-
-    #[test]
     fn parse_git_numstat_snapshot_reads_numstat_lines() {
         let raw = "10\t2\tsrc/main.rs\n3\t1\tREADME.md\n";
         let parsed = parse_git_numstat_snapshot(raw);
@@ -1889,65 +1399,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_bootstrap_request_defaults_to_goal_when_tasks_missing() {
-        let temp = TempDir::new().expect("temp dir should be created");
-        let task_store = TaskStore::new(temp.path());
-        task_store.ensure_dirs().await.unwrap();
-
-        let request = resolve_bootstrap_request(temp.path(), &task_store, None)
-            .await
-            .expect("should resolve")
-            .expect("bootstrap should be enabled");
-        assert_eq!(request.mode, SpecBootstrapMode::TaskOnly);
-        assert!(request.source_path.ends_with("goal.md"));
-    }
-
-    #[tokio::test]
-    async fn resolve_bootstrap_request_uses_fullsync_when_spec_is_provided() {
-        let temp = TempDir::new().expect("temp dir should be created");
-        let task_store = TaskStore::new(temp.path());
-        task_store.ensure_dirs().await.unwrap();
-
-        let request = resolve_bootstrap_request(
-            temp.path(),
-            &task_store,
-            Some(std::path::Path::new("requirements.md")),
-        )
-        .await
-        .expect("should resolve")
-        .expect("bootstrap should be enabled");
-        assert_eq!(request.mode, SpecBootstrapMode::FullSync);
-        assert!(request.source_path.ends_with("requirements.md"));
-    }
-
-    #[tokio::test]
-    async fn resolve_bootstrap_request_skips_when_tasks_exist() {
-        let temp = TempDir::new().expect("temp dir should be created");
-        let task_store = TaskStore::new(temp.path());
-        task_store.ensure_dirs().await.unwrap();
-
-        // Create a task file so tasks are not empty
-        use crate::core::task::{TaskEntry, TaskFrontmatter, TaskState};
-        let entry = TaskEntry {
-            frontmatter: TaskFrontmatter {
-                id: "T1".into(),
-                title: "Setup".into(),
-                owner: "implementer".into(),
-                created: String::new(),
-            },
-            content: String::new(),
-            state: TaskState::Todo,
-            file_name: "T1-setup.md".into(),
-        };
-        task_store.create_task(&entry).await.unwrap();
-
-        let request = resolve_bootstrap_request(temp.path(), &task_store, None)
-            .await
-            .expect("should resolve");
-        assert!(request.is_none());
-    }
-
-    #[tokio::test]
     async fn execute_completes_full_cycle_with_cli_agent() {
         let _workspace_lock = test_workspace_lock().await;
         let temp = TempDir::new().expect("temp dir should be created");
@@ -1962,7 +1413,7 @@ mod tests {
         seed_todo_task(&orch_dir, "T1", "Implement work item").await;
 
         let config = AppConfig::from_orch_dir(&orch_dir).expect("config should load");
-        execute(&orch_dir, &config, true, None, false, false)
+        execute(&orch_dir, &config, true, false, false)
             .await
             .expect("run should complete");
 
@@ -2000,7 +1451,7 @@ mod tests {
         seed_todo_task(&orch_dir, "T1", "Implement work item").await;
 
         let config = AppConfig::from_orch_dir(&orch_dir).expect("config should load");
-        let err = execute(&orch_dir, &config, true, None, false, false)
+        let err = execute(&orch_dir, &config, true, false, false)
             .await
             .expect_err("run should stop");
 
@@ -2012,55 +1463,6 @@ mod tests {
         let tasks = task_store.list_all().await.expect("tasks should load");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].state, TaskState::Blocked);
-    }
-
-    #[test]
-    fn parse_task_breakdown_response_falls_back_to_criteria() {
-        let tasks = parse_task_breakdown_response("no table here", &["criterion a".to_string()])
-            .expect("fallback should build tasks");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "T1");
-    }
-
-    #[test]
-    fn parse_task_breakdown_response_uses_table_when_present() {
-        let response = "| ID | Title | State | Owner | Evidence | Notes |\n|---|---|---|---|---|---|\n| T1 | Implement API | todo | implementer | | |\n";
-        let tasks = parse_task_breakdown_response(response, &[])
-            .expect("should parse table");
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].title, "Implement API");
-    }
-
-    #[test]
-    fn parse_task_breakdown_response_errors_when_no_table_and_no_fallback() {
-        let err = parse_task_breakdown_response("no table here", &[])
-            .expect_err("should fail");
-        assert!(err
-            .to_string()
-            .contains("did not contain a valid task table"));
-    }
-
-    #[test]
-    fn parse_spec_bootstrap_response_uses_criteria_for_tasks_when_table_missing() {
-        let response = r#"
-```json
-{
-  "goal_summary": "Implement todo library",
-  "acceptance_criteria": ["Create task", "Create task", "List tasks"],
-  "verification_commands": ["cargo test"],
-  "ambiguities": []
-}
-```
-"#;
-
-        let parsed = parse_spec_bootstrap_response(response).expect("parse should succeed");
-        assert_eq!(
-            parsed.acceptance_criteria,
-            vec!["Create task".to_string(), "List tasks".to_string()]
-        );
-        assert_eq!(parsed.tasks.len(), 2);
-        assert_eq!(parsed.tasks[0].id, "T1");
-        assert_eq!(parsed.tasks[1].id, "T2");
     }
 
     async fn test_workspace_lock() -> tokio::sync::MutexGuard<'static, ()> {
@@ -2186,7 +1588,7 @@ Write-Output 'Acknowledged.'
                 "## Description\n\n{}\n\n## Evidence\n\n\n\n## Notes\n\nseeded by test\n",
                 title
             ),
-            state: TaskState::Todo,
+            state: TaskState::Open,
             file_name: TaskEntry::generate_file_name(id, title),
         };
         task_store.create_task(&entry).await.expect("task should be created");

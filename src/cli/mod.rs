@@ -32,15 +32,11 @@ pub enum Command {
     /// Initialize .orcha/ directory
     Init,
 
-    /// Execute cycles until goal is done or a stop condition is reached
+    /// Execute cycles until tasks are done or a stop condition is reached
     Run {
         /// Enforce single-writer lock (default: disabled for concurrent runs).
         #[arg(long, default_value_t = false)]
         enforce_lock: bool,
-
-        /// Specification file path to bootstrap goal/tasks before starting.
-        #[arg(long)]
-        spec: Option<PathBuf>,
 
         /// Reset status to cycle 0 / briefing before execution.
         #[arg(long, default_value_t = false)]
@@ -87,7 +83,6 @@ mod tests {
             cli.command,
             Command::Run {
                 enforce_lock: false,
-                spec: None,
                 reset_cycle: false,
                 no_timeout: false,
             }
@@ -102,21 +97,6 @@ mod tests {
             cli.command,
             Command::Run {
                 enforce_lock: true,
-                spec: None,
-                reset_cycle: false,
-                no_timeout: false,
-            }
-        ));
-    }
-
-    #[test]
-    fn cli_accepts_spec_flag_for_run() {
-        let cli = Cli::parse_from(["orcha", "run", "--spec", "requirements.md"]);
-        assert!(matches!(
-            cli.command,
-            Command::Run {
-                enforce_lock: false,
-                spec: Some(_),
                 reset_cycle: false,
                 no_timeout: false,
             }
@@ -130,7 +110,6 @@ mod tests {
             cli.command,
             Command::Run {
                 enforce_lock: false,
-                spec: None,
                 reset_cycle: true,
                 no_timeout: false,
             }
@@ -144,7 +123,6 @@ mod tests {
             cli.command,
             Command::Run {
                 enforce_lock: false,
-                spec: None,
                 reset_cycle: false,
                 no_timeout: true,
             }
