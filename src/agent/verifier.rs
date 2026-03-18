@@ -81,10 +81,16 @@ pub async fn run(commands: &[String]) -> anyhow::Result<VerifyResult> {
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}... (truncated)", &s[..max_len])
+        return s.to_string();
     }
+    // Find the largest char boundary that fits within max_len bytes.
+    let boundary = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_len)
+        .last()
+        .unwrap_or(0);
+    format!("{}... (truncated)", &s[..boundary])
 }
 
 #[cfg(test)]
@@ -112,6 +118,18 @@ mod tests {
     #[test]
     fn truncate_empty_string_is_unchanged() {
         assert_eq!(truncate_for_test("", 10), "");
+    }
+
+    #[test]
+    fn truncate_does_not_panic_on_multibyte_boundary() {
+        // "テスト" is 9 bytes (3 bytes per char). Slicing at byte 5 would
+        // land inside a character and previously caused a panic.
+        let s = "テスト合格"; // 15 bytes
+        let result = truncate_for_test(s, 5);
+        // Must not panic; result must be valid UTF-8 ending at a char boundary.
+        assert!(result.ends_with("... (truncated)"));
+        let prefix = result.trim_end_matches("... (truncated)");
+        assert!(s.starts_with(prefix));
     }
 
     // ── format_result ────────────────────────────────────────────────────────
