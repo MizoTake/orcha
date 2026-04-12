@@ -116,7 +116,7 @@ impl AppConfig {
 
     pub fn has_openai(&self) -> bool {
         matches!(self.openai_mode, ProviderMode::Cli)
-            || self.openai_api_key.as_ref().is_some_and(|k| !k.is_empty())
+            || self.openai_api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
     }
 }
 
@@ -254,11 +254,7 @@ execution:
     fn has_openai_false_when_api_key_empty() {
         let mut cfg = base_config();
         cfg.openai_api_key = Some("   ".to_string());
-        // env_api_key trims and filters empty, but has_openai checks is_some_and(!k.is_empty())
-        // whitespace-only key is still "some" but not empty after trim... test actual behaviour
-        // The field is stored as-is from env; has_openai checks !k.is_empty() (not trimmed)
-        // so whitespace-only is non-empty → returns true. Reflect actual behaviour:
-        assert!(cfg.has_openai());
+        assert!(!cfg.has_openai());
     }
 
     #[test]

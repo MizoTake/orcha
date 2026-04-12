@@ -67,6 +67,9 @@ pub async fn execute(
 
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
+    if response.is_paid {
+        status.frontmatter.budget.paid_calls_used = status.frontmatter.budget.paid_calls_used.saturating_add(1);
+    }
     crate::core::agent_workspace::write_response(
         orch_dir,
         status.frontmatter.cycle,

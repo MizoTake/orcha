@@ -93,3 +93,77 @@ impl Agent for CodexAgent {
         AgentKind::Codex
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::{Agent, AgentContext, ContextFile};
+    use crate::config::AppConfig;
+    use crate::machine_config::{LocalLlmCliConfig, ProviderMode};
+
+    use super::CodexAgent;
+
+    #[test]
+    fn new_requires_api_key() {
+        let err = CodexAgent::new(&base_config()).err().expect("missing api key should fail");
+        assert!(err.to_string().contains("OPENAI_API_KEY not set"));
+    }
+
+    #[test]
+    fn build_prompt_includes_context_files_and_instruction() {
+        let mut config = base_config();
+        config.openai_api_key = Some("sk-openai".into());
+        config.codex_model = "gpt-test".into();
+        let agent = CodexAgent::new(&config).expect("agent should be created");
+        let context = AgentContext {
+            context_files: vec![
+                ContextFile {
+                    name: "goal.md".into(),
+                    content: "Ship the feature".into(),
+                },
+                ContextFile {
+                    name: "task.md".into(),
+                    content: "Add regression tests".into(),
+                },
+            ],
+            role: "implementer".into(),
+            instruction: "Implement the assigned task.".into(),
+        };
+
+        let prompt = agent.build_prompt(&context);
+        assert!(prompt.contains("--- goal.md ---"));
+        assert!(prompt.contains("Ship the feature"));
+        assert!(prompt.contains("--- task.md ---"));
+        assert!(prompt.contains("Add regression tests"));
+        assert!(prompt.contains("--- Instruction ---"));
+        assert!(prompt.contains("Implement the assigned task."));
+    }
+
+    #[test]
+    fn kind_is_codex() {
+        let mut config = base_config();
+        config.openai_api_key = Some("sk-openai".into());
+        let agent = CodexAgent::new(&config).expect("agent should be created");
+        assert_eq!(agent.kind(), crate::agent::AgentKind::Codex);
+    }
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            local_llm_mode: ProviderMode::Http,
+            local_llm_endpoint: String::new(),
+            local_llm_model: String::new(),
+            local_llm_cli: LocalLlmCliConfig::default(),
+            anthropic_api_key: None,
+            anthropic_model: String::new(),
+            anthropic_mode: ProviderMode::Http,
+            anthropic_cli: LocalLlmCliConfig::default(),
+            gemini_api_key: None,
+            gemini_model: String::new(),
+            gemini_mode: ProviderMode::Http,
+            gemini_cli: LocalLlmCliConfig::default(),
+            openai_api_key: None,
+            codex_model: String::new(),
+            openai_mode: ProviderMode::Http,
+            openai_cli: LocalLlmCliConfig::default(),
+        }
+    }
+}

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::LazyLock;
 
 use crate::agent::router::AgentRouter;
 use crate::agent::{AgentContext, ContextFile};
@@ -8,6 +9,9 @@ use crate::core::status::StatusFile;
 use crate::core::status_log;
 use crate::core::task::{TaskState, TaskStore};
 use crate::core::workspace_md;
+use regex::Regex;
+
+static TASK_ID_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Z][0-9]+\b").expect("task id regex should compile"));
 
 /// Phase 2: Plan
 /// Planner agent reviews open tasks and produces an implementation strategy.
@@ -98,6 +102,7 @@ pub async fn execute(
             "Review the open tasks and produce an implementation strategy for this cycle.\n\
              Cycle: {}\n\
              Open: {} / Done: {} / Blocked: {}\n\n\
+             Start your response with `Recommended first task: <TASK_ID>` on its own line.\n\
              Your response must include:\n\
              1. **Recommended order** — which task to tackle first and why\n\
              2. **Dependencies** — any ordering constraints between tasks\n\
@@ -113,6 +118,9 @@ pub async fn execute(
 
     let agent = router.default_agent();
     let response = agent.respond(&context).await?;
+    if response.is_paid {
+        status.frontmatter.budget.paid_calls_used = status.frontmatter.budget.paid_calls_used.saturating_add(1);
+    }
     crate::core::agent_workspace::write_response(
         orch_dir,
         status.frontmatter.cycle,
@@ -123,14 +131,16 @@ pub async fn execute(
     )
     .await?;
 
+    let recommended_task_id = extract_recommended_task_id(&response.content);
     status_log::append(
         &log_path,
         "plan",
         "planner",
         &response.model_used,
         &format!(
-            "Strategy planned for {} open task(s)",
-            open_tasks.len()
+            "Strategy planned for {} open task(s){}",
+            open_tasks.len(),
+            recommended_task_id.as_ref().map(|id| format!("; recommended first task: {id}")).unwrap_or_default()
         ),
     )
     .await?;
@@ -144,6 +154,15 @@ pub async fn execute(
     update_latest_notes(&mut status.content, &plan_note);
 
     Ok(CycleDecision::NextPhase)
+}
+
+fn extract_recommended_task_id(response: &str) -> Option<String> {
+    response.lines().find_map(|line| {
+        if !line.to_ascii_lowercase().contains("recommended first task") {
+            return None;
+        }
+        TASK_ID_PATTERN.find(line).map(|m| m.as_str().to_string())
+    })
 }
 
 fn truncate_plan(s: &str, max: usize) -> String {
@@ -178,7 +197,7 @@ fn update_latest_notes(content: &mut String, note: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{truncate_plan, update_latest_notes};
+    use super::{extract_recommended_task_id, truncate_plan, update_latest_notes};
 
     #[test]
     fn truncate_plan_within_limit_is_unchanged() {
@@ -204,5 +223,11 @@ mod tests {
         let mut content = "## Latest Notes".to_string();
         update_latest_notes(&mut content, "Note.");
         assert!(content.contains("Note."));
+    }
+
+    #[test]
+    fn extract_recommended_task_id_reads_explicit_header_line() {
+        let response = "Recommended first task: T3\n1. Recommended order\n- T3 first because it unblocks T4";
+        assert_eq!(extract_recommended_task_id(response), Some("T3".to_string()));
     }
 }

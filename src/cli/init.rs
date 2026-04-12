@@ -218,3 +218,38 @@ pub async fn execute(orch_dir: &Path) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::execute;
+    use crate::core::agent_workspace;
+
+    #[tokio::test]
+    async fn execute_creates_expected_scaffold() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let orch_dir = temp.path().join(".orcha");
+
+        execute(&orch_dir).await.expect("init should succeed");
+
+        assert!(orch_dir.join("orcha.yml").exists());
+        assert!(agent_workspace::status_path(&orch_dir).exists());
+        assert!(agent_workspace::status_log_path(&orch_dir).exists());
+        assert!(orch_dir.join("roles").join("planner.md").exists());
+        assert!(orch_dir.join("roles").join("reviewer.md").exists());
+        assert!(orch_dir.join("profiles").join("cheap_checkpoints.md").exists());
+        assert!(orch_dir.join("tasks").join("open").exists());
+        assert!(orch_dir.join("tasks").join("in-progress").exists());
+    }
+
+    #[tokio::test]
+    async fn execute_fails_when_orcha_directory_already_exists() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let orch_dir = temp.path().join(".orcha");
+        std::fs::create_dir_all(&orch_dir).expect("orcha dir should exist");
+
+        let err = execute(&orch_dir).await.expect_err("init should fail");
+        assert!(err.to_string().contains("Already initialized"));
+    }
+}

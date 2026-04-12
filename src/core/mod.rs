@@ -9,4 +9,5 @@ pub mod status;
 pub mod status_log;
 pub mod structured_log;
 pub mod task;
+pub mod worktree;
 pub mod workspace_md;

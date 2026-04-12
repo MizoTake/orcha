@@ -588,3 +588,49 @@ Use codex for implementation and opencode(local_llm) for review.
 - **Size gate**: Disabled
 "#
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::core::cycle::Phase;
+    use crate::core::status::StatusFile;
+    use crate::core::task::TaskFrontmatter;
+    use crate::machine_config::{MachineConfig, ProviderMode};
+    use crate::markdown::frontmatter;
+
+    use super::{orcha_yml, status_md, task_md};
+
+    #[test]
+    fn task_md_escapes_single_quotes_and_parses_frontmatter() {
+        let task = task_md("T1", "Bob's task");
+        let parsed: frontmatter::Document<TaskFrontmatter> = frontmatter::parse(&task).expect("task markdown should parse");
+
+        assert_eq!(parsed.frontmatter.id, "T1");
+        assert_eq!(parsed.frontmatter.title, "Bob's task");
+        assert!(parsed.content.contains("## Description"));
+        assert!(parsed.content.contains("## Evidence"));
+        assert!(parsed.content.contains("## Notes"));
+    }
+
+    #[test]
+    fn status_md_parses_initial_status_document() {
+        let status = StatusFile::from_str(&status_md("run-42", "cheap_checkpoints")).expect("status markdown should parse");
+
+        assert_eq!(status.frontmatter.run_id, "run-42");
+        assert_eq!(status.frontmatter.profile.to_string(), "cheap_checkpoints");
+        assert_eq!(status.frontmatter.cycle, 0);
+        assert_eq!(status.frontmatter.phase, Phase::Briefing);
+        assert!(status.content.contains("## Latest Notes"));
+        assert!(status.content.contains("Initialized."));
+    }
+
+    #[test]
+    fn orcha_yml_contains_self_driving_defaults() {
+        let machine: MachineConfig = serde_yaml::from_str(orcha_yml()).expect("template yaml should parse");
+
+        assert!(matches!(machine.agents.local_llm.mode, ProviderMode::Cli));
+        assert_eq!(machine.agents.local_llm.cli.command.as_str(), "opencode-cli");
+        assert_eq!(machine.execution.profile.expect("profile should exist").as_str(), "cheap_checkpoints");
+        assert!(machine.execution.verification.commands.iter().any(|command| command == "cargo check"));
+        assert!(machine.execution.verification.commands.iter().any(|command| command == "cargo test --lib"));
+    }
+}

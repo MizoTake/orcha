@@ -92,3 +92,77 @@ impl Agent for AnthropicAgent {
         AgentKind::Claude
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::{Agent, AgentContext, ContextFile};
+    use crate::config::AppConfig;
+    use crate::machine_config::{LocalLlmCliConfig, ProviderMode};
+
+    use super::AnthropicAgent;
+
+    #[test]
+    fn new_requires_api_key() {
+        let err = AnthropicAgent::new(&base_config()).err().expect("missing api key should fail");
+        assert!(err.to_string().contains("ANTHROPIC_API_KEY not set"));
+    }
+
+    #[test]
+    fn build_prompt_includes_context_files_and_instruction() {
+        let mut config = base_config();
+        config.anthropic_api_key = Some("sk-ant".into());
+        config.anthropic_model = "claude-test".into();
+        let agent = AnthropicAgent::new(&config).expect("agent should be created");
+        let context = AgentContext {
+            context_files: vec![
+                ContextFile {
+                    name: "status.md".into(),
+                    content: "Cycle 3".into(),
+                },
+                ContextFile {
+                    name: "task.md".into(),
+                    content: "Implement logging".into(),
+                },
+            ],
+            role: "reviewer".into(),
+            instruction: "Review the latest changes.".into(),
+        };
+
+        let prompt = agent.build_prompt(&context);
+        assert!(prompt.contains("--- status.md ---"));
+        assert!(prompt.contains("Cycle 3"));
+        assert!(prompt.contains("--- task.md ---"));
+        assert!(prompt.contains("Implement logging"));
+        assert!(prompt.contains("--- Instruction ---"));
+        assert!(prompt.contains("Review the latest changes."));
+    }
+
+    #[test]
+    fn kind_is_claude() {
+        let mut config = base_config();
+        config.anthropic_api_key = Some("sk-ant".into());
+        let agent = AnthropicAgent::new(&config).expect("agent should be created");
+        assert_eq!(agent.kind(), crate::agent::AgentKind::Claude);
+    }
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            local_llm_mode: ProviderMode::Http,
+            local_llm_endpoint: String::new(),
+            local_llm_model: String::new(),
+            local_llm_cli: LocalLlmCliConfig::default(),
+            anthropic_api_key: None,
+            anthropic_model: String::new(),
+            anthropic_mode: ProviderMode::Http,
+            anthropic_cli: LocalLlmCliConfig::default(),
+            gemini_api_key: None,
+            gemini_model: String::new(),
+            gemini_mode: ProviderMode::Http,
+            gemini_cli: LocalLlmCliConfig::default(),
+            openai_api_key: None,
+            codex_model: String::new(),
+            openai_mode: ProviderMode::Http,
+            openai_cli: LocalLlmCliConfig::default(),
+        }
+    }
+}

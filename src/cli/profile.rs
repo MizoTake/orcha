@@ -81,3 +81,51 @@ pub async fn execute(orch_dir: &Path, name: &str) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::execute;
+    use crate::core::agent_workspace;
+    use crate::core::profile::ProfileName;
+    use crate::core::status::StatusFile;
+    use crate::machine_config::MachineConfig;
+    use crate::markdown::template;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn execute_updates_status_and_machine_config_for_builtin_profile() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let orch_dir = temp.path().join(".orcha");
+        let workspace_dir = orch_dir.join("agentworkspace");
+        tokio::fs::create_dir_all(&workspace_dir).await.expect("agent workspace should exist");
+        let status_path = workspace_dir.join("status.md");
+        tokio::fs::write(&status_path, template::status_md("run-1", "cheap_checkpoints")).await.expect("status file should be written");
+
+        execute(&orch_dir, "quality_gate").await.expect("profile change should succeed");
+
+        let status = StatusFile::load(&agent_workspace::resolve_status_path(&orch_dir)).await.expect("status should load");
+        assert_eq!(status.frontmatter.profile, ProfileName::QualityGate);
+        let machine = MachineConfig::load(&orch_dir).expect("machine config should load");
+        assert_eq!(machine.execution.profile.expect("profile ref should exist").as_str(), "quality_gate");
+    }
+
+    #[tokio::test]
+    async fn execute_keeps_status_profile_for_custom_profile_and_updates_machine_config() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let orch_dir = temp.path().join(".orcha");
+        let workspace_dir = orch_dir.join("agentworkspace");
+        let profiles_dir = orch_dir.join("profiles");
+        tokio::fs::create_dir_all(&workspace_dir).await.expect("agent workspace should exist");
+        tokio::fs::create_dir_all(&profiles_dir).await.expect("profiles dir should exist");
+        let status_path = workspace_dir.join("status.md");
+        tokio::fs::write(&status_path, template::status_md("run-1", "cheap_checkpoints")).await.expect("status file should be written");
+        tokio::fs::write(profiles_dir.join("my_team_flow.md"), "# Profile: my_team_flow\n").await.expect("custom profile should be written");
+
+        execute(&orch_dir, "my-team-flow").await.expect("custom profile change should succeed");
+
+        let status = StatusFile::load(&agent_workspace::resolve_status_path(&orch_dir)).await.expect("status should load");
+        assert_eq!(status.frontmatter.profile, ProfileName::CheapCheckpoints);
+        let machine = MachineConfig::load(&orch_dir).expect("machine config should load");
+        assert_eq!(machine.execution.profile.expect("profile ref should exist").as_str(), "my_team_flow");
+    }
+}

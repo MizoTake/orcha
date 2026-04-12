@@ -5,7 +5,6 @@ param(
 
     [string]$OrchDir = ".orcha",
 
-    [ValidateSet("local_only", "cheap_checkpoints", "quality_gate", "unblock_first")]
     [string]$ProfileName,
 
     [switch]$Release,
@@ -21,7 +20,7 @@ $cliArgs = @("--orcha-dir", $OrchDir, $Command)
 
 if ($Command -eq "profile") {
     if ([string]::IsNullOrWhiteSpace($ProfileName)) {
-        Write-Error "Profile command requires -ProfileName (local_only|cheap_checkpoints|quality_gate|unblock_first)."
+        Write-Error "Profile command requires -ProfileName (built-in or custom profile name)."
         exit 2
     }
     $cliArgs += $ProfileName

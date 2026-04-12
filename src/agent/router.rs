@@ -189,3 +189,111 @@ impl AgentRouter {
         self.agents.get(&kind).map(|a| a.as_ref())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+
+    use super::{AgentRouter, GateContext};
+    use crate::agent::{Agent, AgentContext, AgentKind, AgentResponse};
+    use crate::core::cycle::Phase;
+    use crate::core::profile::{ProfileName, ProfileRules};
+
+    struct FakeAgent {
+        kind: AgentKind,
+    }
+
+    #[async_trait]
+    impl Agent for FakeAgent {
+        async fn respond(&self, _context: &AgentContext) -> anyhow::Result<AgentResponse> {
+            Ok(AgentResponse {
+                content: String::new(),
+                model_used: self.kind.to_string(),
+                tokens_used: None,
+                is_paid: false,
+            })
+        }
+
+        fn kind(&self) -> AgentKind {
+            self.kind
+        }
+    }
+
+    fn router_with_agents(profile_rules: ProfileRules, agent_kinds: &[AgentKind]) -> AgentRouter {
+        let mut agents: HashMap<AgentKind, Box<dyn Agent>> = HashMap::new();
+        for kind in agent_kinds {
+            agents.insert(*kind, Box::new(FakeAgent { kind: *kind }));
+        }
+        AgentRouter { agents, profile_rules }
+    }
+
+    #[test]
+    fn security_gate_prefers_claude_when_available() {
+        let router = router_with_agents(
+            ProfileRules::from_name(ProfileName::CheapCheckpoints),
+            &[AgentKind::LocalLlm, AgentKind::Claude],
+        );
+        let gate_ctx = GateContext {
+            diff_content: Some("auth token update".to_string()),
+            diff_lines: 10,
+            file_paths: vec!["src/auth.rs".to_string()],
+            consecutive_verify_failures: 0,
+        };
+
+        assert_eq!(router.select(Phase::Impl, &gate_ctx).kind(), AgentKind::Claude);
+    }
+
+    #[test]
+    fn security_gate_falls_back_to_local_when_claude_is_unavailable() {
+        let router = router_with_agents(
+            ProfileRules::from_name(ProfileName::CheapCheckpoints),
+            &[AgentKind::LocalLlm],
+        );
+        let gate_ctx = GateContext {
+            diff_content: Some("auth token update".to_string()),
+            diff_lines: 10,
+            file_paths: vec!["src/auth.rs".to_string()],
+            consecutive_verify_failures: 0,
+        };
+
+        assert_eq!(router.select(Phase::Impl, &gate_ctx).kind(), AgentKind::LocalLlm);
+    }
+
+    #[test]
+    fn unblock_gate_escalates_to_codex_before_review_preferences() {
+        let router = router_with_agents(
+            ProfileRules::from_name(ProfileName::UnblockFirst),
+            &[AgentKind::LocalLlm, AgentKind::Claude, AgentKind::Codex],
+        );
+        let gate_ctx = GateContext {
+            diff_content: None,
+            diff_lines: 10,
+            file_paths: vec![],
+            consecutive_verify_failures: 1,
+        };
+
+        assert_eq!(router.select(Phase::Review, &gate_ctx).kind(), AgentKind::Codex);
+    }
+
+    #[test]
+    fn review_phase_uses_review_agent_when_no_other_gate_triggers() {
+        let router = router_with_agents(
+            ProfileRules::from_name(ProfileName::CheapCheckpoints),
+            &[AgentKind::LocalLlm, AgentKind::Claude],
+        );
+
+        assert_eq!(router.select(Phase::Review, &GateContext::default()).kind(), AgentKind::Claude);
+    }
+
+    #[test]
+    fn default_agent_falls_back_to_local_when_profile_default_is_missing() {
+        let router = router_with_agents(
+            ProfileRules::from_name(ProfileName::CodexImplOpencodeReview),
+            &[AgentKind::LocalLlm],
+        );
+
+        assert_eq!(router.default_agent().kind(), AgentKind::LocalLlm);
+    }
+}

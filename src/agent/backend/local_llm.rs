@@ -274,6 +274,9 @@ fn update_signal_from_key_bool(key: &str, value: bool, signals: &mut ReadySignal
 mod tests {
     use serde_json::json;
 
+    use crate::agent::{AgentContext, ContextFile};
+    use crate::config::AppConfig;
+
     #[test]
     fn infer_ready_when_generation_status_is_ready() {
         let payload = json!({
@@ -330,5 +333,41 @@ mod tests {
     fn parse_host_from_openai_endpoint() {
         let host = super::lmstudio_host_from_endpoint("http://localhost:1234/v1");
         assert_eq!(host.as_deref(), Some("localhost:1234"));
+    }
+
+    #[test]
+    fn build_prompt_includes_context_files_and_instruction() {
+        let agent = super::LocalLlmAgent::new(&AppConfig::from_env());
+        let context = AgentContext {
+            context_files: vec![
+                ContextFile {
+                    name: "goal.md".into(),
+                    content: "Ship feature".into(),
+                },
+                ContextFile {
+                    name: "status.md".into(),
+                    content: "Cycle 2".into(),
+                },
+            ],
+            role: "planner".into(),
+            instruction: "Produce the next plan.".into(),
+        };
+
+        let prompt = agent.build_prompt(&context);
+        assert!(prompt.contains("--- goal.md ---"));
+        assert!(prompt.contains("Ship feature"));
+        assert!(prompt.contains("--- status.md ---"));
+        assert!(prompt.contains("Cycle 2"));
+        assert!(prompt.contains("--- Instruction ---"));
+        assert!(prompt.contains("Produce the next plan."));
+    }
+
+    #[test]
+    fn completions_url_trims_trailing_slash() {
+        let mut config = AppConfig::from_env();
+        config.local_llm_endpoint = "http://localhost:11434/v1/".into();
+
+        let agent = super::LocalLlmAgent::new(&config);
+        assert_eq!(agent.completions_url(), "http://localhost:11434/v1/chat/completions");
     }
 }

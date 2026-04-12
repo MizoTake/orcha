@@ -6,6 +6,7 @@ use crate::core::agent_workspace;
 use crate::core::cycle::CycleDecision;
 use crate::core::status::{ReviewStatus, StatusFile};
 use crate::core::status_log;
+use crate::core::worktree;
 use crate::core::workspace_md;
 
 /// Phase 5: Fix
@@ -63,7 +64,7 @@ pub async fn execute(
     };
 
     let agent = router.default_agent();
-    let diff_before = changed_files_snapshot().await;
+    let diff_before = worktree::capture_repo_change_snapshot(orch_dir).await;
     let response = agent.respond(&context).await?;
     if response.is_paid {
         status.frontmatter.budget.paid_calls_used =
@@ -80,11 +81,11 @@ pub async fn execute(
     .await?;
 
     let resolved = response.content.contains("Resolved: yes");
-    let diff_after = changed_files_snapshot().await;
+    let diff_after = worktree::capture_repo_change_snapshot(orch_dir).await;
     let repo_changed = diff_before != diff_after;
     let reported_file_changes = response_reports_file_changes(&response.content);
 
-    if !resolved || !repo_changed || !reported_file_changes {
+    if !resolved || !repo_changed {
         status.frontmatter.review_status = ReviewStatus::IssuesFound;
         let failure_reason = fix_completion_failure_reason(
             &response.model_used,
@@ -106,13 +107,14 @@ pub async fn execute(
     }
 
     status.frontmatter.review_status = ReviewStatus::Clean;
+    let log_message = if reported_file_changes { "Fixes applied" } else { "Fixes applied (git evidence; response omitted changed-files report)" };
 
     status_log::append(
         &log_path,
         "fix",
         "implementer",
         &response.model_used,
-        "Fixes applied",
+        log_message,
     )
     .await?;
 
@@ -126,26 +128,6 @@ pub async fn execute(
     .await?;
 
     Ok(CycleDecision::NextPhase)
-}
-
-async fn changed_files_snapshot() -> Vec<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["diff", "--name-only", "HEAD"])
-        .output()
-        .await;
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
 }
 
 fn response_reports_file_changes(response: &str) -> bool {

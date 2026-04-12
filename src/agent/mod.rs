@@ -65,3 +65,16 @@ pub trait Agent: Send + Sync {
     /// Which kind of agent this is.
     fn kind(&self) -> AgentKind;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AgentKind;
+
+    #[test]
+    fn agent_kind_display_uses_cli_facing_names() {
+        assert_eq!(AgentKind::LocalLlm.to_string(), "local_llm");
+        assert_eq!(AgentKind::Claude.to_string(), "claude");
+        assert_eq!(AgentKind::Gemini.to_string(), "gemini");
+        assert_eq!(AgentKind::Codex.to_string(), "codex");
+    }
+}
